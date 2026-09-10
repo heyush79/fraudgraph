@@ -1,0 +1,74 @@
+spring:
+  application:
+    name: stream-engine
+
+server:
+  port: 8081   # actuator + (Phase 2) read API for the analyst agent
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+
+fraudgraph:
+  kafka:
+    bootstrapServers: ${FRAUDGRAPH_KAFKA_BOOTSTRAP_SERVERS:localhost:29092}
+    applicationId: fraudgraph-stream-engine
+    stateDir: ${FRAUDGRAPH_KAFKA_STATE_DIR:/tmp/fraudgraph/state}
+    numStreamThreads: 2          # <= partitions (6); 2 keeps the single-node demo cheap
+    commitIntervalMs: 100        # EOS commits per interval; 100ms bounds end-to-end latency, not throughput
+    processingGuarantee: exactly_once_v2   # LLD §3.7 — costs a transactional producer, worth it for an audit log
+
+  topics:
+    raw: transactions.raw
+    decisions: fraud.decisions
+    dlq: transactions.dlq
+
+  dedup:
+    ttlHours: 1                  # producer idempotence already covers retries; 1h covers consumer redelivery after a rebalance
+    evictEveryMinutes: 1         # punctuator cadence; cheap full scan of a small store
+
+  velocity:
+    limit1m: 8                   # a human can't complete more than ~8 checkouts in a minute
+    limit5m: 20                  # 4/min sustained is already a bot; 20 leaves room for genuine burst shopping
+    limit1h: 60                  # one txn/min for an hour is script behaviour, never a person
+    graceSecs: 30                # window retention = size + grace; 30s covers producer/consumer lag without bloating RocksDB
+
+  geo:                           # used from Phase 2
+    maxSpeedKmh: 900             # commercial flight cruise; anything faster is two people or two cards
+    minDistanceKm: 100           # kills GPS-jitter false positives between neighbouring cell towers
+    minGapSecs: 60               # division-by-tiny-dt guard; two txns 5s apart are the same checkout
+
+  graph:                         # used from Phase 2
+    maxEdgesPerNode: 50          # bounds DFS branching factor; honest users have far fewer distinct counterparties/day
+    edgeTtlHours: 24             # ring payments cycle within hours; older edges are noise for detection
+    maxCycleDepth: 5             # rings of 3–5 accounts are the documented pattern; deeper = O(b^d) blowup
+
+  scoring:                       # used from Phase 3
+    timeoutMs: 150               # leaves 850ms of the 1s budget for the rest of the path
+    sampleRate: 0.01             # 1% shadow sample of clean traffic so the model's score distribution can be monitored
+    breaker:
+      window: 50                 # small enough to react within seconds at 50 tps
+      failureRate: 0.5           # half the calls failing = scorer is down, not flapping
+      waitOpenSecs: 10           # long enough for a pod restart, short enough that DEGRADED mode is brief
+
+  thresholds:
+    block: 0.85                  # placeholder until evaluate.py's threshold sweep (Phase 3) replaces it
+    review: 0.60                 # ditto — the README table is the source of truth once trained
+    minSignalsForReview: 2       # two independent weak signals (severity >= 0.5) corroborate each other
+    minSignalSeverity: 0.5       # a signal at half its overshoot scale is "clearly over", not borderline
+
+  rules:
+    amountCapInr: 200000         # absolute hard cap; above ₹2L is a manual-approval flow, never auto-allowed
+    sanctionedMerchants:         # demo list; production would come from a sanctions feed
+      - m_CRYPTO_0013
+      - m_GAMBLING_0007
+
+  merchantRiskTiers:             # static lookup by merchant category (the middle of m_<CAT>_<nnnn>); 0 = default
+    CRYPTO: 3
+    GAMBLING: 3
+    GIFT: 3                      # gift cards are the classic cash-out rail
+    ELEC: 2                      # resellable electronics
+    TRAVEL: 1
+    P2P: 1

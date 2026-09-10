@@ -1,0 +1,43 @@
+// FraudGraph scoring contract — the SINGLE source of truth for the feature vector.
+// Java (stream-engine) and Python (ml-scorer) both codegen from this file, so
+// train-time and serve-time features cannot silently drift (LLD §4.1).
+//
+// Phase 1: the stream engine mirrors this in FeatureVector.java by hand and fills
+// the Phase 2/3 fields with defaults. Phase 3 switches to generated classes.
+syntax = "proto3";
+
+package fraudgraph.scoring.v1;
+
+option java_package = "com.fraudgraph.scoring.v1";
+option java_multiple_files = true;
+
+service ScoringService {
+  rpc Score (FeatureVector) returns (ScoreResult);
+}
+
+message FeatureVector {
+  string txn_id = 1;
+  int32 cnt_1m = 2;
+  int32 cnt_5m = 3;
+  int32 cnt_1h = 4;
+  double sum_1h = 5;
+  double amt_z = 6;
+  double geo_speed_kmh = 7;
+  double secs_since_last = 8;
+  int32 merchant_risk_tier = 9;   // 0-3, static lookup table
+  int32 node_degree = 10;
+  bool in_cycle = 11;
+  int32 component_size = 12;
+  int32 channel = 13;             // CARD=0, UPI=1, P2P=2
+}
+
+message ScoreResult {
+  double probability = 1;
+  repeated Contribution contributions = 2;   // top-5 SHAP values
+  string model_version = 3;
+}
+
+message Contribution {
+  string feature = 1;
+  double shap = 2;
+}
