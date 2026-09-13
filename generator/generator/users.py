@@ -5,6 +5,8 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 
+from .geo import haversine_km
+
 
 @dataclass(frozen=True, slots=True)
 class City:
@@ -32,6 +34,12 @@ MERCHANT_CATEGORIES: tuple[str, ...] = (
 )
 MERCHANTS_PER_CATEGORY = 50
 
+# Default population. With 50 tps this is ~9 txns per user per hour, well under the
+# engine's hourly limit of 60, so only injected bursts cross the velocity thresholds.
+# (500 users at 50 tps would be 360/h each and flag everybody — found on day 1.)
+DEFAULT_USERS = 20_000
+MIN_CONTACTS, MAX_CONTACTS = 2, 4   # small P2P circles keep the honest graph sparse
+
 
 def all_merchants() -> list[str]:
     return [f"m_{cat}_{i:04d}" for cat in MERCHANT_CATEGORIES for i in range(MERCHANTS_PER_CATEGORY)]
@@ -47,6 +55,7 @@ class UserProfile:
     amount_sigma: float
     active_start_hour: int  # UTC hour; users transact mostly inside [start, end)
     active_end_hour: int
+    contacts: tuple[str, ...] = ()  # userIds this user sends P2P money to
 
 
 def build_population(n_users: int, seed: int) -> list[UserProfile]:
@@ -74,4 +83,27 @@ def build_population(n_users: int, seed: int) -> list[UserProfile]:
                 active_end_hour=end,
             )
         )
-    return users
+    # contacts are assigned once every id exists; they may be reciprocal, never self
+    ids = [u.user_id for u in users]
+    with_contacts: list[UserProfile] = []
+    for u in users:
+        k = min(rng.randint(MIN_CONTACTS, MAX_CONTACTS), len(ids) - 1)
+        picks: set[str] = set()
+        while len(picks) < k:
+            c = rng.choice(ids)
+            if c != u.user_id:
+                picks.add(c)
+        with_contacts.append(
+            UserProfile(
+                user_id=u.user_id, home=u.home, device_id=u.device_id,
+                favourite_merchants=u.favourite_merchants, amount_mu=u.amount_mu,
+                amount_sigma=u.amount_sigma, active_start_hour=u.active_start_hour,
+                active_end_hour=u.active_end_hour, contacts=tuple(sorted(picks)),
+            )
+        )
+    return with_contacts
+
+
+def far_cities(home: City, min_km: float) -> list[City]:
+    """Cities at least `min_km` from `home`; the GeoInjector needs > 1000 km."""
+    return [c for c in CITIES if haversine_km(home.lat, home.lon, c.lat, c.lon) >= min_km]

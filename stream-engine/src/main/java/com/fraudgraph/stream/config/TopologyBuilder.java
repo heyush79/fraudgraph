@@ -1,12 +1,17 @@
 package com.fraudgraph.stream.config;
 
 import com.fraudgraph.stream.check.Check;
+import com.fraudgraph.stream.check.GeoCheck;
+import com.fraudgraph.stream.check.GraphCheck;
 import com.fraudgraph.stream.check.VelocityCheck;
 import com.fraudgraph.stream.check.VelocityWindows;
 import com.fraudgraph.stream.check.WindowAggregate;
 import com.fraudgraph.stream.decision.DecisionAssembler;
 import com.fraudgraph.stream.decision.ThresholdPolicy;
+import com.fraudgraph.stream.graph.TransactionGraph;
 import com.fraudgraph.stream.model.Transaction;
+import com.fraudgraph.stream.profile.LastLocation;
+import com.fraudgraph.stream.profile.WelfordAccumulator;
 import com.fraudgraph.stream.processor.CheckProcessor;
 import com.fraudgraph.stream.processor.DecisionProcessor;
 import com.fraudgraph.stream.processor.DedupProcessor;
@@ -40,11 +45,13 @@ public final class TopologyBuilder {
 
     private final FraudGraphProperties props;
     private final ScoringClient scoringClient;
+    private final TransactionGraph graph;
     private final MeterRegistry metrics;
 
-    public TopologyBuilder(FraudGraphProperties props, ScoringClient scoringClient, MeterRegistry metrics) {
+    public TopologyBuilder(FraudGraphProperties props, ScoringClient scoringClient, TransactionGraph graph, MeterRegistry metrics) {
         this.props = props;
         this.scoringClient = scoringClient;
+        this.graph = graph;
         this.metrics = metrics;
     }
 
@@ -53,7 +60,10 @@ public final class TopologyBuilder {
         var aggSerde = SerdeFactory.json(WindowAggregate.class);
         Duration grace = Duration.ofSeconds(props.velocity().graceSecs());
 
-        List<Check> checks = List.of(new VelocityCheck(props.velocity()));
+        List<Check> checks = List.of(
+                new VelocityCheck(props.velocity()),
+                new GeoCheck(props.geo()),
+                new GraphCheck(props.graph()));
         RuleEngine rules = new RuleEngine(List.of(
                 new HardBlockMerchantRule(props.rules().sanctionedMerchants()),
                 new AmountCapRule(props.rules().amountCapInr())));
@@ -71,8 +81,16 @@ public final class TopologyBuilder {
                 Stores.persistentKeyValueStore(DedupProcessor.STORE), Serdes.String(), Serdes.Long()), DEDUP);
 
         t.addProcessor(ENRICH, () -> new EnrichProcessor(props.merchantRiskTiers()), DEDUP);
+        t.addProcessor(CHECK, () -> new CheckProcessor(checks, graph, props.profile(), props.geo(), metrics), ENRICH);
 
-        t.addProcessor(CHECK, () -> new CheckProcessor(checks, metrics), ENRICH);
+        // profile + last-location: read by ENRICH, written by CHECK (LLD §3.1)
+        t.addStateStore(Stores.keyValueStoreBuilder(
+                Stores.persistentKeyValueStore(EnrichProcessor.PROFILE_STORE),
+                Serdes.String(), SerdeFactory.json(WelfordAccumulator.class)), ENRICH, CHECK);
+        t.addStateStore(Stores.keyValueStoreBuilder(
+                Stores.persistentKeyValueStore(EnrichProcessor.LAST_LOCATION_STORE),
+                Serdes.String(), SerdeFactory.json(LastLocation.class)), ENRICH, CHECK);
+
         for (var w : List.of(
                 new Object[]{VelocityWindows.STORE_1M, VelocityWindows.WINDOW_1M},
                 new Object[]{VelocityWindows.STORE_5M, VelocityWindows.WINDOW_5M},

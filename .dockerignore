@@ -1,0 +1,10 @@
+.git
+docs
+**/.venv
+**/target
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+ml-scorer/registry/v*
+ml-scorer/scorer/gen
+dashboard/dist

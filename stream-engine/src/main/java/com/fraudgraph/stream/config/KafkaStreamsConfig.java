@@ -1,6 +1,9 @@
 package com.fraudgraph.stream.config;
 
+import com.fraudgraph.stream.graph.TransactionGraph;
 import com.fraudgraph.stream.scoring.DegradedScoringClient;
+import com.fraudgraph.stream.scoring.GrpcScoringClient;
+import com.fraudgraph.stream.scoring.ResilientScoringClient;
 import com.fraudgraph.stream.scoring.ScoringClient;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -18,15 +21,34 @@ import java.util.Properties;
 public class KafkaStreamsConfig {
     private static final Logger log = LoggerFactory.getLogger(KafkaStreamsConfig.class);
 
-    /** Phase 1: rules only. Phase 3 replaces this bean with the breaker-wrapped gRPC client. */
+    /**
+     * Breaker-wrapped gRPC scorer (LLD §3.6). With scoring disabled the engine runs rules-only
+     * and every scored decision is DEGRADED — same behaviour as an open breaker, by design.
+     */
+    @Bean(destroyMethod = "close")
+    public ScoringClient scoringClient(FraudGraphProperties props, MeterRegistry metrics) {
+        var s = props.scoring();
+        if (!s.enabled()) {
+            log.warn("scoring disabled: rules-only, every flagged decision will be DEGRADED");
+            return new DegradedScoringClient();
+        }
+        log.info("scoring via gRPC {}:{} timeout {}ms, breaker window {} / {}% / {}s",
+                s.host(), s.port(), s.timeoutMs(), s.breaker().window(), (int) (s.breaker().failureRate() * 100), s.breaker().waitOpenSecs());
+        return new ResilientScoringClient(new GrpcScoringClient(s.host(), s.port(), s.timeoutMs()), s.breaker(), metrics);
+    }
+
+    /** One graph per engine instance, shared by every stream thread (see TransactionGraph javadoc). */
     @Bean
-    public ScoringClient scoringClient() {
-        return new DegradedScoringClient();
+    public TransactionGraph transactionGraph(FraudGraphProperties props, MeterRegistry metrics) {
+        var g = props.graph();
+        TransactionGraph graph = new TransactionGraph(g.maxEdgesPerNode(), java.time.Duration.ofHours(g.edgeTtlHours()).toMillis(), g.maxCycleDepth());
+        metrics.gauge("fraudgraph_graph_nodes", graph, TransactionGraph::nodeCount);
+        return graph;
     }
 
     @Bean
-    public Topology topology(FraudGraphProperties props, ScoringClient scoringClient, MeterRegistry metrics) {
-        Topology t = new TopologyBuilder(props, scoringClient, metrics).build();
+    public Topology topology(FraudGraphProperties props, ScoringClient scoringClient, TransactionGraph graph, MeterRegistry metrics) {
+        Topology t = new TopologyBuilder(props, scoringClient, graph, metrics).build();
         log.info("topology:\n{}", t.describe());
         return t;
     }

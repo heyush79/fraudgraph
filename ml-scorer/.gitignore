@@ -1,0 +1,4 @@
+scorer/gen/
+registry/v*/
+.venv/
+__pycache__/

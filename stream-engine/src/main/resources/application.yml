@@ -35,27 +35,37 @@ fraudgraph:
     limit1h: 60                  # one txn/min for an hour is script behaviour, never a person
     graceSecs: 30                # window retention = size + grace; 30s covers producer/consumer lag without bloating RocksDB
 
-  geo:                           # used from Phase 2
+  profile:
+    minSamplesForZ: 10           # a z-score from fewer than 10 purchases is noise; feature stays 0 until then
+    minStd: 1.0                  # INR; a user who always pays the same amount would get an infinite z on a ₹1 change
+
+  geo:
     maxSpeedKmh: 900             # commercial flight cruise; anything faster is two people or two cards
     minDistanceKm: 100           # kills GPS-jitter false positives between neighbouring cell towers
     minGapSecs: 60               # division-by-tiny-dt guard; two txns 5s apart are the same checkout
 
-  graph:                         # used from Phase 2
+  graph:
     maxEdgesPerNode: 50          # bounds DFS branching factor; honest users have far fewer distinct counterparties/day
     edgeTtlHours: 24             # ring payments cycle within hours; older edges are noise for detection
     maxCycleDepth: 5             # rings of 3–5 accounts are the documented pattern; deeper = O(b^d) blowup
+    minCycleLength: 3            # A→B→A is a repayment between friends, not a ring
 
-  scoring:                       # used from Phase 3
+  scoring:
+    enabled: ${FRAUDGRAPH_SCORING_ENABLED:true}
+    host: ${FRAUDGRAPH_SCORING_HOST:localhost}
+    port: ${FRAUDGRAPH_SCORING_PORT:50051}
     timeoutMs: 150               # leaves 850ms of the 1s budget for the rest of the path
     sampleRate: 0.01             # 1% shadow sample of clean traffic so the model's score distribution can be monitored
     breaker:
-      window: 50                 # small enough to react within seconds at 50 tps
+      window: 50                 # count-based sliding window; small enough to react within seconds at 50 tps
+      minCalls: 10               # a dead scorer is obvious after ten calls; waiting for 50 would mean 50 x 150ms of stalls
       failureRate: 0.5           # half the calls failing = scorer is down, not flapping
       waitOpenSecs: 10           # long enough for a pod restart, short enough that DEGRADED mode is brief
+      halfOpenCalls: 5           # probes allowed through while half-open before deciding to close or re-open
 
   thresholds:
-    block: 0.85                  # placeholder until evaluate.py's threshold sweep (Phase 3) replaces it
-    review: 0.60                 # ditto — the README table is the source of truth once trained
+    block: 0.95                  # from the v1 sweep (2026-09-12, 1.64M rows): precision 0.926 / recall 0.924; 0.85 would auto-block at 0.845 precision
+    review: 0.60                 # v1 sweep: precision 0.70 / recall 0.975 — a review queue that misses ~2.5% of fraud at 30% analyst noise
     minSignalsForReview: 2       # two independent weak signals (severity >= 0.5) corroborate each other
     minSignalSeverity: 0.5       # a signal at half its overshoot scale is "clearly over", not borderline
 

@@ -40,6 +40,7 @@ public final class DecisionProcessor implements Processor<String, CheckedTransac
     private final DecisionAssembler assembler;
     private final MeterRegistry metrics;
     private final Timer latency;
+    private final Timer engineLatency;
 
     private ProcessorContext<String, Object> context;
 
@@ -51,6 +52,11 @@ public final class DecisionProcessor implements Processor<String, CheckedTransac
         this.assembler = assembler;
         this.metrics = metrics;
         this.latency = Timer.builder("fraudgraph_decision_latency")
+                .description("end to end: transaction timestamp to decision")
+                .publishPercentiles(0.5, 0.95, 0.99)
+                .register(metrics);
+        this.engineLatency = Timer.builder("fraudgraph_engine_latency")
+                .description("engine only: enrich-stage ingest to decision")
                 .publishPercentiles(0.5, 0.95, 0.99)
                 .register(metrics);
     }
@@ -69,9 +75,10 @@ public final class DecisionProcessor implements Processor<String, CheckedTransac
             ScoreResult ml = invokeModel ? safeScore(checked.features()) : ScoreResult.notScored();
 
             ThresholdPolicy.Outcome outcome = policy.decide(txn, checked.signals(), ml);
-            Decision decision = assembler.assemble(checked, ml, outcome, System.nanoTime(), Instant.now());
+            Decision decision = assembler.assemble(checked, ml, outcome, Instant.now());
 
             latency.record(decision.latencyMs(), TimeUnit.MILLISECONDS);
+            engineLatency.record(Math.max(0L, System.nanoTime() - checked.enriched().ingestNanos()), TimeUnit.NANOSECONDS);
             metrics.counter("fraudgraph_decisions_total", "verdict", decision.verdict().name(), "mode", decision.mode().name()).increment();
             context.forward(record.withValue(decision), DECISIONS_SINK);
         } catch (RuntimeException e) {

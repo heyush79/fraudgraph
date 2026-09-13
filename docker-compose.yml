@@ -86,23 +86,54 @@ services:
       retries: 10
 
   # ---- application services (profile: demo) ------------------------------
-  stream-engine:
-    build: ./stream-engine
-    container_name: fraudgraph-stream-engine
+  ml-scorer:
+    build:
+      context: .                       # repo root: the shared proto must be in the build context
+      dockerfile: ml-scorer/Dockerfile
+    container_name: fraudgraph-ml-scorer
     profiles: ["demo"]
     depends_on:
       kafka-init:
         condition: service_completed_successfully
     ports:
+      - "50051:50051"                  # gRPC scoring
+      - "8000:8000"                    # admin: /health /model /reload /metrics
+    environment:
+      SCORER_REGISTRY: /app/registry
+      SCORER_SHAP_MIN_PROB: "0.4"
+      FRAUDGRAPH_BOOTSTRAP_SERVERS: kafka:9092
+    volumes:
+      # bind mount so `make train` (in a sibling container) and the server share versions
+      - ./ml-scorer/registry:/app/registry
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  stream-engine:
+    build:
+      context: .
+      dockerfile: stream-engine/Dockerfile
+    container_name: fraudgraph-stream-engine
+    profiles: ["demo"]
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      ml-scorer:
+        condition: service_started   # started, not healthy: the engine must run DEGRADED without a scorer
+    ports:
       - "8081:8081"
     environment:
       FRAUDGRAPH_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       FRAUDGRAPH_KAFKA_STATE_DIR: /var/lib/fraudgraph/state
+      FRAUDGRAPH_SCORING_HOST: ml-scorer
     volumes:
       - stream-state:/var/lib/fraudgraph/state
 
   generator:
-    build: ./generator
+    build:
+      context: ./generator
     container_name: fraudgraph-generator
     profiles: ["demo"]
     depends_on:
@@ -110,7 +141,10 @@ services:
         condition: service_completed_successfully
     environment:
       FRAUDGRAPH_BOOTSTRAP_SERVERS: kafka:9092
-    command: ["--tps", "${GEN_TPS:-50}", "--fraud-rate", "${GEN_FRAUD_RATE:-0.02}", "--patterns", "${GEN_PATTERNS:-velocity}"]
+      FRAUDGRAPH_PATTERNS: ${GEN_PATTERNS:-velocity,ring,geo}
+      FRAUDGRAPH_USERS: ${GEN_USERS:-20000}
+      FRAUDGRAPH_DURATION: ${GEN_DURATION:-}     # empty = run until stopped
+    command: ["--tps", "${GEN_TPS:-50}", "--fraud-rate", "${GEN_FRAUD_RATE:-0.02}"]
 
 volumes:
   kafka-data:

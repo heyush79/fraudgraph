@@ -36,13 +36,13 @@ Python generator → Kafka `transactions.raw` (keyed by userId, 6 partitions) �
 ## Commands
 - `docker compose up -d` — kafka, redis, postgres
 - `make demo` — full stack + generator with fraud injection + dashboard
-- `make train` — retrain scorer from labeled topics
+- `make train` — train a scorer version from fraud.decisions + transactions.labels (TRAIN_HOURS=24) and hot-reload it; `make evaluate` prints the threshold sweep
 - `make bench` — latency benchmark (generator at high tps, no fraud)
 
 ## Current status
 <!-- keep this section updated as you build -->
 - [x] Phase 1: generator + Kafka + rules-only stream engine (scaffolded 2026-09-11; velocity windows + dedup store live here, profile/geo/graph stores in Phase 2)
-- [ ] Phase 2: state stores (windows, profiles, geo) + graph checks
-- [ ] Phase 3: ML scorer + gRPC + circuit breaker
+- [x] Phase 2: state stores (profiles, geo) + graph checks + ring/geo injectors (2026-09-12)
+- [x] Phase 3: ML scorer + gRPC + circuit breaker (2026-09-12; trains from the fraud.decisions feature log, see LLD §4.3 amendment)
 - [ ] Phase 4: case service + dashboard
 - [ ] Phase 5: analyst agent + evals

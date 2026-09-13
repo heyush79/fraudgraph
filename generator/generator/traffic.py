@@ -10,8 +10,10 @@ from .users import UserProfile
 
 # ~0.02 degrees ≈ 2 km of GPS jitter around the home city.
 HOME_JITTER_DEG = 0.02
-# Share of legitimate traffic that is a P2P transfer (feeds the graph in Phase 2).
-P2P_SHARE = 0.10
+# Share of legitimate traffic that is a P2P transfer to one of the user's contacts.
+# Kept small and contact-bound so the honest graph stays sparse: random P2P across
+# the whole population would form thousands of accidental 3–5 cycles per day.
+P2P_SHARE = 0.05
 
 
 class BaseTraffic:
@@ -19,6 +21,7 @@ class BaseTraffic:
         if tps <= 0:
             raise ValueError("tps must be > 0")
         self._users = users
+        self._by_id = {u.user_id: u for u in users}
         self._tps = tps
         self._rng = rng
 
@@ -36,10 +39,8 @@ class BaseTraffic:
         return self._rng.choice(self._users)
 
     def make_transaction(self, user: UserProfile, now: datetime) -> Transaction:
-        if self._rng.random() < P2P_SHARE:
-            counterparty = self._rng.choice(self._users)
-            while counterparty.user_id == user.user_id:
-                counterparty = self._rng.choice(self._users)
+        if user.contacts and self._rng.random() < P2P_SHARE:
+            counterparty = self._rng.choice(user.contacts)
             return self.make_p2p(user, counterparty, self.sample_amount(user), now)
         return Transaction(
             txn_id=str(uuid.uuid4()),
@@ -55,12 +56,15 @@ class BaseTraffic:
             ts=now,
         )
 
-    def make_p2p(self, user: UserProfile, counterparty: UserProfile, amount: float, now: datetime) -> Transaction:
+    def user(self, user_id: str) -> UserProfile:
+        return self._by_id[user_id]
+
+    def make_p2p(self, user: UserProfile, counterparty_id: str, amount: float, now: datetime) -> Transaction:
         return Transaction(
             txn_id=str(uuid.uuid4()),
             user_id=user.user_id,
             merchant_id="m_P2P_0000",
-            counterparty_id=counterparty.user_id,
+            counterparty_id=counterparty_id,
             amount=amount,
             currency="INR",
             lat=user.home.lat + self._rng.uniform(-HOME_JITTER_DEG, HOME_JITTER_DEG),

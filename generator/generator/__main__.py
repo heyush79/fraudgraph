@@ -1,4 +1,4 @@
-"""CLI: python -m generator --tps 50 --fraud-rate 0.02 --patterns velocity"""
+"""CLI: python -m generator --tps 50 --fraud-rate 0.02 --patterns velocity,ring,geo"""
 from __future__ import annotations
 
 import argparse
@@ -10,6 +10,17 @@ import sys
 from .injectors import REGISTRY
 from .publisher import KafkaPublisher, StdoutPublisher
 from .runner import Runner, RunnerConfig
+from .users import DEFAULT_USERS
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    return int(raw) if raw else default
+
+
+def _env_float(name: str, default: float | None) -> float | None:
+    raw = os.environ.get(name, "").strip()
+    return float(raw) if raw else default
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -17,12 +28,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tps", type=float, default=50.0, help="legitimate transactions per second (Poisson)")
     p.add_argument("--fraud-rate", type=float, default=0.02, help="fraction of transactions that are injected fraud")
     p.add_argument(
-        "--patterns", default="velocity",
+        "--patterns", default=os.environ.get("FRAUDGRAPH_PATTERNS", "velocity,ring,geo"),
         help=f"comma-separated fraud patterns to inject; available: {','.join(sorted(REGISTRY))}",
     )
-    p.add_argument("--users", type=int, default=500, help="size of the synthetic user population")
+    p.add_argument("--users", type=int, default=_env_int("FRAUDGRAPH_USERS", DEFAULT_USERS),
+                   help="size of the synthetic user population (env FRAUDGRAPH_USERS)")
     p.add_argument("--seed", type=int, default=None, help="RNG seed for reproducible runs")
-    p.add_argument("--duration", type=float, default=None, help="stop after N seconds (default: run forever)")
+    p.add_argument("--duration", type=float, default=_env_float("FRAUDGRAPH_DURATION", None),
+                   help="stop after N seconds (env FRAUDGRAPH_DURATION; default: run forever)")
     p.add_argument(
         "--bootstrap-servers", default=os.environ.get("FRAUDGRAPH_BOOTSTRAP_SERVERS", "localhost:29092"),
         help="Kafka bootstrap servers (env FRAUDGRAPH_BOOTSTRAP_SERVERS)",

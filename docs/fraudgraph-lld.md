@@ -61,10 +61,13 @@ Design notes:
   "firedRules": ["VELOCITY_1M", "GEO_IMPOSSIBLE"],
   "features": { "cnt1m": 14, "geoSpeedKmh": 4210.5, "amtZ": 3.8, "inCycle": true },
   "contributions": [ {"feature": "cnt1m", "shap": 0.31}, ... ],
-  "latencyMs": 74,
+  "signals": [ {"code": "VELOCITY_1M", "severity": 0.75, "evidence": {"count": 14, "limit": 8, ...}} ],
+  "latencyMs": 74,                          // end to end: txn ts → decidedAt
   "decidedAt": "2026-09-04T10:15:03.194Z"
 }
 ```
+
+*Amendment (Phase 2):* `signals` carries each check's evidence verbatim so the analyst agent can cite counts, distances and the ring's node list without re-querying; `firedRules` alone would lose it. `latencyMs` is measured from the transaction's own timestamp, not engine ingest.
 
 `fraud.decisions` is the audit log. Replaying it reconstructs system behavior for any window — say this sentence in interviews.
 
@@ -156,7 +159,7 @@ Amount z-score = `(amount − mean) / std` (guard std < ε → z = 0, and requir
 
 **GeoCheck.** Haversine distance between `last-location-store` value and current txn; implied speed = km / hours-elapsed. Signal `GEO_IMPOSSIBLE` if speed > 900 km/h (commercial flight) **and** distance > 100 km (kills GPS-jitter false positives). Skip if no prior location or Δt < 60s (division blow-up guard). These two guard clauses are exactly the edge-case thinking interviewers probe for.
 
-**GraphCheck** — the differentiator. `TransactionGraph` is a singleton (one per stream thread; merge-on-read across threads is v2 — note it as a known limitation):
+**GraphCheck** — the differentiator. `TransactionGraph` is a singleton per engine *instance*, shared by all stream threads under a lock (*amended in Phase 2*: partitions are keyed by userId, so a 4-account ring spans up to 4 partitions and a per-thread graph would only ever see fragments of it; the critical section is a deque append plus a DFS that dies after a hop or two for honest users). Rings split across *instances* remain a known limitation. Cycles of length 2 (A→B→A) are excluded as ordinary repayments (`graph.minCycleLength: 3`).
 
 - Adjacency: `Map<String, Deque<Edge>>`, capped at 50 most-recent edges per node; `Edge(dst, amount, ts)` with 24h TTL, lazily evicted on access.
 - **Ring detection: bounded DFS** from the txn's source node following outgoing edges, depth ≤ 5, visited-set pruned. A path returning to the source = cycle → `RING_SUSPECT` with the cycle's node list as evidence. Cost O(b^5) worst case with b ≤ 50, in practice tiny because honest users don't form cycles.
@@ -183,7 +186,7 @@ Decision d = thresholdPolicy.decide(txn, signals, ml); // rules first, then thre
 | scorer DEGRADED and ≥ 1 signal | REVIEW (fail-safe: never auto-block on rules alone in degraded mode, except hard rules) |
 | otherwise | ALLOW |
 
-**ScoringClient resilience** (Resilience4j): timeout 150ms; circuit breaker — sliding window 50 calls, open at 50% failure, half-open probe after 10s. Open breaker → `DegradedScoringClient` returns `ScoreResult.degraded()` and the decision carries `mode: DEGRADED`. Every state transition logged + countered (`fraudgraph_breaker_state`).
+**ScoringClient resilience** (Resilience4j): timeout 150ms (a gRPC deadline); circuit breaker — count-based sliding window 50 calls, minimum 10 calls before it can open (*added in Phase 3*: a dead scorer is obvious after ten calls, waiting for fifty would mean fifty 150 ms stalls), open at 50% failure, automatic half-open probe after 10s with 5 permitted probe calls. Open breaker → `DegradedScoringClient` returns `ScoreResult.degraded()` and the decision carries `mode: DEGRADED`. Every state transition logged + countered (`fraudgraph_breaker_state`).
 
 ### 3.7 Error handling
 
@@ -234,7 +237,7 @@ ml-scorer/
 
 ### 4.3 Training pipeline
 
-1. `train.py --hours 2` consumes `transactions.raw` joined with `transactions.labels` on `txnId` → pandas frame using **the same `features.py`** as serving.
+1. `train.py --hours 24` consumes **`fraud.decisions`** joined with `transactions.labels` on `txnId` → pandas frame using **the same `features.py`** as serving. (*Amended in Phase 3*: the original text said `transactions.raw`, but the feature vector — window counts, z-score, geo speed, cycle membership — exists only in the engine's state. The engine logs the exact vector it scored on every decision, so training from that log is what makes "train and serve see the same vector" literally true; recomputing features in Python would be a second engine and the very skew the proto exists to prevent. The record timestamp on `fraud.decisions` is the transaction's event time, so the time split below uses it. The `verdict` on the decision is never a feature.)
 2. Model: `XGBClassifier(n_estimators=200, max_depth=6, scale_pos_weight=neg/pos)` — class imbalance handled explicitly (fraud ≈ 1–2% of traffic).
 3. Split **by time, not randomly** (train on first 80% of the window, test on last 20%) — random splits leak future into past on temporal data. Interviewers who know ML will specifically check whether you know this.
 4. `evaluate.py` sweeps thresholds, writes precision/recall/F1 per threshold; you pick the decision thresholds *from this table*, which turns your threshold config from magic numbers into an artifact.
@@ -243,7 +246,7 @@ ml-scorer/
 ### 4.4 Serving
 
 - `grpc.aio` with 4 workers; model + explainer loaded once at startup; `/reload` hot-swaps by version directory.
-- SHAP via `TreeExplainer` (fast for trees); compute top-5 contributions per call. If p99 exceeds ~40ms budget, compute SHAP only when `probability > 0.4` — scores that will be ALLOW anyway don't need explanations. Nice optimization story.
+- SHAP via TreeSHAP; compute top-5 contributions per call. (*Amended in Phase 3*: computed with XGBoost's native `pred_contribs=True`, which is the same TreeSHAP algorithm `shap.TreeExplainer` runs for tree models, without adding numba/llvmlite to the serving image. Values are in log-odds space.) If p99 exceeds ~40ms budget, compute SHAP only when `probability > 0.4` — scores that will be ALLOW anyway don't need explanations. Nice optimization story.
 - Metrics: score histogram, latency histogram, model_version gauge → basis for drift monitoring (v2: PSI between serving and training score distributions).
 
 ---
@@ -340,7 +343,7 @@ Because the generator knows ground truth, you get automatic agent evals: for eac
 
 ## 7. Generator (Python)
 
-- Poisson arrivals (~50 tps default) over ~500 synthetic users, each with a home city, favorite merchants, amount log-normal params, active hours.
+- Poisson arrivals (~50 tps default) over ~20,000 synthetic users, each with a home city, favorite merchants, amount log-normal params, active hours, and 2–4 P2P contacts. (*Amended in Phase 2*: the original ~500 users at 50 tps meant 360 txns per user per hour, which trips the §9 velocity limits for everyone; 20k users gives ~9/h. P2P goes only to contacts so the honest graph stays sparse and accidental 3–5 cycles are rare.)
 - Injectors (each publishes the true label to `transactions.labels`):
   - `VelocityInjector`: pick a user, fire 15–40 txns in 1–3 min.
   - `RingInjector`: pick 4–8 accounts, send amounts around the cycle A→B→C→A over 10–30 min (tests edge TTL + cycle detection together).

@@ -10,16 +10,21 @@ import heapq
 import logging
 import random
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 
 from .injectors import REGISTRY, Injector
 from .models import ScheduledTxn
 from .publisher import Publisher
 from .traffic import BaseTraffic
-from .users import UserProfile, build_population
+from .users import DEFAULT_USERS, UserProfile, build_population
 
 log = logging.getLogger(__name__)
+
+# If the schedule falls this far behind the wall clock the host slept (or we can't keep
+# up): jump forward instead of replaying the gap. A real payment stream never backfills,
+# and replayed events carry stale timestamps that make end-to-end latency meaningless.
+MAX_BEHIND_SECS = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,7 +32,7 @@ class RunnerConfig:
     tps: float = 50.0
     fraud_rate: float = 0.02
     patterns: tuple[str, ...] = ("velocity",)
-    n_users: int = 500
+    n_users: int = DEFAULT_USERS
     seed: int | None = None
     duration_secs: float | None = None  # None = run until interrupted
     max_events: int | None = None       # mostly for tests
@@ -38,6 +43,7 @@ class RunnerStats:
     published: int = 0
     fraud_published: int = 0
     episodes: int = 0
+    clock_jumps: int = 0
     per_pattern: dict[str, int] = field(default_factory=dict)
 
 
@@ -108,8 +114,15 @@ class Runner:
             while not self._stop:
                 if deadline and self.clock.now() >= deadline:
                     break
-                if self.cfg.max_events and self.stats.published >= self.cfg.max_events:
+                if self._limit_reached():
                     break
+
+                now = self.clock.now()
+                if (now - next_base).total_seconds() > MAX_BEHIND_SECS:
+                    behind = now - next_base
+                    self._skip_ahead(behind)
+                    next_base += behind
+                    next_episode = {i: t + behind for i, t in next_episode.items()}
 
                 # spawn any due episodes (they push future events onto the heap)
                 for i, inj in enumerate(self.injectors):
@@ -118,12 +131,21 @@ class Runner:
                         next_episode[i] += timedelta(seconds=self._episode_gap_seconds(inj))
 
                 # publish injected events that are due before the next base arrival
-                while self._queue and self._queue[0].at <= next_base:
+                resync = False
+                while self._queue and self._queue[0].at <= next_base and not self._limit_reached():
                     ev = heapq.heappop(self._queue)
                     self.clock.sleep_until(ev.at)
+                    if self._behind(ev.at):          # the host slept during that sleep
+                        heapq.heappush(self._queue, ev)
+                        resync = True
+                        break
                     self._publish(ev)
+                if resync or self._limit_reached():
+                    continue  # loop head resyncs the schedule / breaks
 
                 self.clock.sleep_until(next_base)
+                if self._behind(next_base):
+                    continue
                 user = self.traffic.pick_user(next_base)
                 self._publish(ScheduledTxn(at=next_base, txn=self.traffic.make_transaction(user, next_base)))
                 next_base += timedelta(seconds=self.traffic.next_gap_seconds())
@@ -136,6 +158,25 @@ class Runner:
             self.publisher.close()
             log.info("generator stopped: %s", self.stats)
         return self.stats
+
+    def _behind(self, scheduled: datetime) -> bool:
+        return (self.clock.now() - scheduled).total_seconds() > MAX_BEHIND_SECS
+
+    def _skip_ahead(self, behind: timedelta) -> None:
+        """Shift every queued episode event forward by `behind` so episodes stay intact
+        (a ring still closes; its hops just happen after the gap, not during it)."""
+        self.stats.clock_jumps += 1
+        log.warning("schedule is %.0fs behind the wall clock (host slept?); skipping ahead, not backfilling", behind.total_seconds())
+        shifted = []
+        for ev in self._queue:
+            txn = replace(ev.txn, ts=ev.txn.ts + behind)
+            label = replace(ev.label, ts=ev.label.ts + behind) if ev.label else None
+            shifted.append(ScheduledTxn(at=ev.at + behind, txn=txn, label=label))
+        heapq.heapify(shifted)
+        self._queue = shifted
+
+    def _limit_reached(self) -> bool:
+        return bool(self.cfg.max_events) and self.stats.published >= self.cfg.max_events
 
     def _publish(self, ev: ScheduledTxn) -> None:
         self.publisher.publish_txn(ev.txn)

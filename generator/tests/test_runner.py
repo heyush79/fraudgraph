@@ -44,6 +44,14 @@ def test_fraud_rate_is_roughly_honoured():
     assert 0.03 <= rate <= 0.07, rate
 
 
+def test_all_three_patterns_inject_and_label():
+    # ring episodes take 10–30 min to play out, so run ~50 min of fake time
+    stats, pub = _run(patterns=("velocity", "ring", "geo"), max_events=300_000)
+    assert set(stats.per_pattern) == {"VELOCITY", "RING", "GEO"}
+    assert all(n > 0 for n in stats.per_pattern.values())
+    assert 0.035 <= stats.fraud_published / stats.published <= 0.065
+
+
 def test_zero_fraud_rate_publishes_no_labels():
     stats, pub = _run(fraud_rate=0.0, max_events=2_000)
     assert stats.fraud_published == 0 and pub.labels == []
@@ -56,5 +64,47 @@ def test_duration_stops_the_run():
 
 
 def test_unknown_pattern_is_rejected():
-    with pytest.raises(ValueError, match="ring"):
-        Runner(RunnerConfig(patterns=("ring",)), InMemoryPublisher())
+    with pytest.raises(ValueError, match="mule"):
+        Runner(RunnerConfig(patterns=("mule",), n_users=10), InMemoryPublisher())
+
+
+class SleepingClock(FakeClock):
+    """Jumps forward one hour on the 500th sleep, like a laptop lid closing."""
+
+    def __init__(self, start: datetime) -> None:
+        super().__init__(start)
+        self.sleeps = 0
+
+    def sleep_until(self, when: datetime) -> None:
+        self.sleeps += 1
+        if self.sleeps == 500:
+            self._now += timedelta(hours=1)
+        super().sleep_until(when)
+
+
+def test_host_sleep_skips_ahead_instead_of_backfilling():
+    cfg = RunnerConfig(tps=100.0, fraud_rate=0.05, patterns=("velocity", "ring", "geo"), n_users=100, seed=5, max_events=5_000)
+    pub = InMemoryPublisher()
+    clock = SleepingClock(datetime(2026, 9, 4, tzinfo=timezone.utc))
+    runner = Runner(cfg, pub, clock=clock)
+
+    seen_at: list[datetime] = []
+    original = runner._publish
+
+    def spy(ev):
+        seen_at.append(clock.now())
+        original(ev)
+
+    runner._publish = spy  # type: ignore[method-assign]
+    stats = runner.run()
+
+    assert stats.clock_jumps == 1
+    # no published event is ever more than a few seconds older than the clock that published it
+    staleness = [(at - t.ts).total_seconds() for at, t in zip(seen_at, pub.txns)]
+    assert max(staleness) < 6.0, max(staleness)
+    # timestamps remain monotonic and the hour-long gap is a real hole, not a burst
+    ts = [t.ts for t in pub.txns]
+    assert ts == sorted(ts)
+    gaps = [(b - a).total_seconds() for a, b in zip(ts, ts[1:])]
+    assert max(gaps) > 3500
+    assert sum(1 for g in gaps if g > 60) == 1

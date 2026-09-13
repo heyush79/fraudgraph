@@ -10,17 +10,22 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Builds the fraud.decisions event. firedRules = signal codes + the hard rule that fired, if any. */
+/**
+ * Builds the fraud.decisions event. firedRules = signal codes + the hard rule that fired, if any.
+ * latencyMs is end to end (transaction timestamp → decidedAt): it includes the generator's
+ * publish, the broker hop and the engine, which is the number a benchmark should report.
+ * The engine-only figure is the {@code fraudgraph_engine_latency} timer.
+ */
 public final class DecisionAssembler {
-    public Decision assemble(CheckedTransaction checked, ScoreResult ml, ThresholdPolicy.Outcome outcome, long nowNanos, Instant decidedAt) {
+    public Decision assemble(CheckedTransaction checked, ScoreResult ml, ThresholdPolicy.Outcome outcome, Instant decidedAt) {
         List<String> fired = new ArrayList<>();
         for (RiskSignal s : checked.signals()) {
             fired.add(s.code());
         }
         outcome.ruleCode().ifPresent(fired::add);
 
-        long latencyMs = Math.max(0L, (nowNanos - checked.enriched().ingestNanos()) / 1_000_000L);
         var txn = checked.enriched().txn();
+        long latencyMs = txn.ts() == null ? 0L : Math.max(0L, decidedAt.toEpochMilli() - txn.ts().toEpochMilli());
         return new Decision(
                 txn.txnId(),
                 txn.userId(),
@@ -28,6 +33,7 @@ public final class DecisionAssembler {
                 ml.isDegraded() ? Mode.DEGRADED : Mode.FULL,
                 ml.isScored() ? ml.probability() : null,
                 List.copyOf(fired),
+                checked.signals(),
                 checked.features().asMap(),
                 ml.contributions(),
                 latencyMs,
