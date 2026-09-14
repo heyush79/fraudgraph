@@ -30,6 +30,10 @@ services:
       # from the LLD (§2). Auto-create would silently give the wrong counts.
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       KAFKA_LOG_DIRS: /var/lib/kafka/data
+      # 512m is ample for 4 topics and 16 partitions at ~50 messages a second. The image
+      # defaults to 1G, which on a 16 GB laptop is the single largest consumer in the stack.
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms512m"
+    mem_limit: 1200m
     volumes:
       - kafka-data:/var/lib/kafka/data
     healthcheck:
@@ -60,6 +64,10 @@ services:
   redis:
     image: redis:7-alpine
     container_name: fraudgraph-redis
+    # Holds a capped list of recent decisions per user with a 24h TTL. Left unbounded it grows
+    # with the population; 192mb with LRU eviction makes it a cache again, which is all it is.
+    command: ["redis-server", "--maxmemory", "192mb", "--maxmemory-policy", "allkeys-lru", "--save", ""]
+    mem_limit: 256m
     ports:
       - "6379:6379"
     healthcheck:
@@ -71,6 +79,7 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: fraudgraph-postgres
+    mem_limit: 384m
     ports:
       - "5432:5432"
     environment:
@@ -94,6 +103,7 @@ services:
     image: adminer:4-standalone
     container_name: fraudgraph-adminer
     profiles: ["tools"]
+    mem_limit: 128m
     depends_on:
       postgres:
         condition: service_healthy
@@ -110,6 +120,7 @@ services:
       dockerfile: ml-scorer/Dockerfile
     container_name: fraudgraph-ml-scorer
     profiles: ["demo"]
+    mem_limit: 640m
     depends_on:
       kafka-init:
         condition: service_completed_successfully
@@ -134,12 +145,17 @@ services:
       context: .
       dockerfile: stream-engine/Dockerfile
     container_name: fraudgraph-stream-engine
-    profiles: ["demo"]
+    profiles: ["demo", "core"]
+    mem_limit: 1g
     depends_on:
       kafka-init:
         condition: service_completed_successfully
       ml-scorer:
-        condition: service_started   # started, not healthy: the engine must run DEGRADED without a scorer
+        # started, not healthy, and NOT required: the engine is designed to run without a
+        # scorer at all, degrading to rules behind the circuit breaker. A hard dependency
+        # would contradict that, and would stop the lean profile from starting.
+        condition: service_started
+        required: false
     ports:
       - "8081:8081"
     environment:
@@ -153,7 +169,8 @@ services:
     build:
       context: ./case-service
     container_name: fraudgraph-case-service
-    profiles: ["demo"]
+    profiles: ["demo", "core"]
+    mem_limit: 768m
     depends_on:
       kafka-init:
         condition: service_completed_successfully
@@ -181,6 +198,7 @@ services:
       context: ./analyst-agent
     container_name: fraudgraph-analyst-agent
     profiles: ["demo"]
+    mem_limit: 640m
     depends_on:
       case-service:
         condition: service_started
@@ -205,6 +223,7 @@ services:
       context: ./dashboard
     container_name: fraudgraph-dashboard
     profiles: ["demo"]
+    mem_limit: 96m
     depends_on:
       case-service:
         condition: service_started
@@ -215,7 +234,8 @@ services:
     build:
       context: ./generator
     container_name: fraudgraph-generator
-    profiles: ["demo"]
+    profiles: ["demo", "core"]
+    mem_limit: 192m
     depends_on:
       kafka-init:
         condition: service_completed_successfully

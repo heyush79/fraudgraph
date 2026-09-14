@@ -11,4 +11,7 @@ FROM eclipse-temurin:17-jre
 WORKDIR /app
 COPY --from=build /build/stream-engine/target/stream-engine-*.jar app.jar
 EXPOSE 8081
-ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "-jar", "app.jar"]
+# MaxRAMPercentage is a share of the CONTAINER limit, so compose sets mem_limit for every
+# service. Without a limit it is a share of the whole Docker VM and three JVMs each think
+# they may take most of it. RocksDB keeps its block cache and memtables OFF heap, so the JVM cannot have most of the container.
+ENTRYPOINT ["java", "-XX:MaxRAMPercentage=55", "-jar", "app.jar"]

@@ -1,6 +1,9 @@
 # FraudGraph — top-level developer commands (see CLAUDE.md).
 #
 #   make up      infra only (kafka, redis, postgres) — same as `docker compose up -d`
+#   make lean    the pipeline only: kafka, postgres, redis, engine, case-service, generator.
+#                No scorer (the engine degrades to rules, by design), no agent, no dashboard.
+#                Roughly half the memory of `make demo`. Use this for day-to-day work.
 #   make demo    full stack + generator with fraud injection (+ dashboard from Phase 4)
 #                GEN_TPS / GEN_FRAUD_RATE / GEN_PATTERNS / GEN_USERS / GEN_DURATION override the generator
 #   make bench   latency benchmark: generator at high tps, no fraud
@@ -25,10 +28,17 @@ TRAIN_HOURS    ?= 24
 EVAL_LIMIT     ?= 30
 EVAL_HOURS     ?= 6
 
-.PHONY: up demo bench train train-local evaluate evals proto dash db-ui db-ui-stop test test-java test-java-db test-python db-forget-migrations down clean logs
+.PHONY: up lean demo bench train train-local evaluate evals proto dash db-ui db-ui-stop test test-java test-java-db test-python db-forget-migrations down clean logs
 
 up:
 	$(COMPOSE) up -d
+
+lean:
+	GEN_TPS=$(GEN_TPS) GEN_FRAUD_RATE=$(GEN_FRAUD_RATE) GEN_PATTERNS=$(GEN_PATTERNS) \
+	GEN_USERS=$(GEN_USERS) GEN_DURATION=$(GEN_DURATION) \
+		$(COMPOSE) --profile core up -d
+	@echo "engine: http://localhost:8081/actuator/health   cases: http://localhost:8082/cases"
+	@echo "no scorer running, so flagged decisions will read mode=DEGRADED. That is the breaker working."
 
 demo:
 	GEN_TPS=$(GEN_TPS) GEN_FRAUD_RATE=$(GEN_FRAUD_RATE) GEN_PATTERNS=$(GEN_PATTERNS) \

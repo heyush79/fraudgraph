@@ -11,4 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf 
 WORKDIR /app
 COPY --from=build /build/target/case-service-*.jar app.jar
 EXPOSE 8082
-ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "-jar", "app.jar"]
+# MaxRAMPercentage is a share of the CONTAINER limit, so compose sets mem_limit for every
+# service. Without a limit it is a share of the whole Docker VM and three JVMs each think
+# they may take most of it. no off-heap store here, so the JVM can have more of its container.
+ENTRYPOINT ["java", "-XX:MaxRAMPercentage=65", "-jar", "app.jar"]
