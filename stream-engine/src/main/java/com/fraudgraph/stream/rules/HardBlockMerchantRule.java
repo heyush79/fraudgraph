@@ -6,7 +6,9 @@ import com.fraudgraph.stream.model.Verdict;
 import com.fraudgraph.stream.scoring.ScoreResult;
 
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -31,9 +33,14 @@ public final class HardBlockMerchantRule implements Rule {
     }
 
     @Override
-    public Optional<Verdict> apply(Transaction txn, List<RiskSignal> signals, ScoreResult ml) {
-        return txn.merchantId() != null && sanctioned.contains(txn.merchantId())
-                ? Optional.of(Verdict.BLOCK)
-                : Optional.empty();
+    public Optional<Fired> apply(Transaction txn, List<RiskSignal> signals, ScoreResult ml) {
+        if (txn.merchantId() == null || !sanctioned.contains(txn.merchantId())) {
+            return Optional.empty();
+        }
+        Map<String, Object> evidence = new LinkedHashMap<>();
+        evidence.put("merchantId", txn.merchantId());
+        evidence.put("merchantCategory", txn.merchantCategory());
+        evidence.put("reason", "merchant is on the sanctions blocklist");
+        return Optional.of(Fired.of(Verdict.BLOCK, evidence));
     }
 }

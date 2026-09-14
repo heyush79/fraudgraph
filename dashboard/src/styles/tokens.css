@@ -1,0 +1,72 @@
+/*
+ * One place for colour, type and spacing. Light is the base; the dark block
+ * below only re-points the same custom properties, so no component stylesheet
+ * ever needs a media query of its own.
+ */
+:root {
+  color-scheme: light dark;
+
+  /* Project palette */
+  --ink: #17222b;
+  --muted: #4a5966;
+  --accent: #0f6e76;
+  --accent-ink: #0b555b;
+  --allow: #2e7d4f;
+  --review: #b7791f;
+  --block: #b3362b;
+
+  --bg: #f4f6f8;
+  --surface: #ffffff;
+  --surface-2: #eef1f4;
+  --border: #d8dfe5;
+  --border-strong: #bcc7d0;
+
+  /* Verdict tints for row backgrounds — colour is always paired with a label */
+  --allow-tint: #eaf5ee;
+  --review-tint: #fdf4e3;
+  --block-tint: #fbecea;
+  --accent-tint: #e4f1f2;
+
+  --shadow: 0 1px 2px rgba(23, 34, 43, 0.06), 0 6px 18px rgba(23, 34, 43, 0.05);
+
+  --font-sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
+    'Liberation Mono', monospace;
+
+  --r-sm: 4px;
+  --r-md: 8px;
+  --r-lg: 12px;
+
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e4ebf1;
+    --muted: #93a3b0;
+    --accent: #3fa8b0;
+    --accent-ink: #6cc7ce;
+    --allow: #55b57e;
+    --review: #dda344;
+    --block: #e2705f;
+
+    --bg: #0e161c;
+    --surface: #151f27;
+    --surface-2: #1c2831;
+    --border: #27343e;
+    --border-strong: #3a4a56;
+
+    --allow-tint: #142b20;
+    --review-tint: #2e2413;
+    --block-tint: #331916;
+    --accent-tint: #102b2e;
+
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.3);
+  }
+}

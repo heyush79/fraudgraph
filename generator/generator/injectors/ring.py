@@ -12,8 +12,15 @@ from .base import Injector
 
 MIN_ACCOUNTS, MAX_ACCOUNTS = 4, 8
 MIN_MINUTES, MAX_MINUTES = 10.0, 30.0
-MIN_AMOUNT, MAX_AMOUNT = 20_000.0, 80_000.0
 MIN_KEEP, MAX_KEEP = 0.90, 0.98   # fraction passed on at each hop
+
+# A ring moves a sum that is large *for the accounts involved*, not a flat band.
+# The original 20k-80k band made rings separable by amount alone: legitimate P2P averages a
+# few hundred rupees, so the v1 model learned "unusually large P2P transfer" and never needed
+# the graph at all (`in_cycle` ranked last of twelve features by gain). Drawing from the
+# source account's own log-normal and scaling it keeps the transfer plausible for that
+# account while still unusual for it, which is what forces the model to use the cycle.
+MIN_MULTIPLIER, MAX_MULTIPLIER = 2.0, 6.0
 
 
 class RingInjector(Injector):
@@ -32,7 +39,7 @@ class RingInjector(Injector):
         # k hops spread over the duration, order preserved, mild jitter
         gap = duration / k
         offsets = [i * gap + self._rng.uniform(0.0, 0.5 * gap) for i in range(k)]
-        amount = self._rng.uniform(MIN_AMOUNT, MAX_AMOUNT)
+        amount = self._traffic.sample_amount(ring[0]) * self._rng.uniform(MIN_MULTIPLIER, MAX_MULTIPLIER)
         out: list[ScheduledTxn] = []
         for i, off in enumerate(offsets):
             src = ring[i]

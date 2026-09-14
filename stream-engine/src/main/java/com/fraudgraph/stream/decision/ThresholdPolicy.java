@@ -21,7 +21,12 @@ import java.util.Optional;
  * </ol>
  */
 public final class ThresholdPolicy {
-    public record Outcome(Verdict verdict, Optional<String> ruleCode) {}
+    /** {@code ruleSignal} is present only when a hard rule fired, and carries its evidence. */
+    public record Outcome(Verdict verdict, Optional<String> ruleCode, Optional<RiskSignal> ruleSignal) {
+        static Outcome of(Verdict verdict) {
+            return new Outcome(verdict, Optional.empty(), Optional.empty());
+        }
+    }
 
     private final FraudGraphProperties.Thresholds thresholds;
     private final RuleEngine rules;
@@ -34,18 +39,19 @@ public final class ThresholdPolicy {
     public Outcome decide(Transaction txn, List<RiskSignal> signals, ScoreResult ml) {
         Optional<RuleEngine.Outcome> hard = rules.apply(txn, signals, ml);
         if (hard.isPresent()) {
-            return new Outcome(hard.get().verdict(), Optional.of(hard.get().ruleCode()));
+            RuleEngine.Outcome o = hard.get();
+            return new Outcome(o.verdict(), Optional.of(o.ruleCode()), Optional.of(o.signal()));
         }
         if (ml.isScored() && ml.probability() >= thresholds.block()) {
-            return new Outcome(Verdict.BLOCK, Optional.empty());
+            return Outcome.of(Verdict.BLOCK);
         }
         long strong = signals.stream().filter(s -> s.severity() >= thresholds.minSignalSeverity()).count();
         if ((ml.isScored() && ml.probability() >= thresholds.review()) || strong >= thresholds.minSignalsForReview()) {
-            return new Outcome(Verdict.REVIEW, Optional.empty());
+            return Outcome.of(Verdict.REVIEW);
         }
         if (ml.isDegraded() && !signals.isEmpty()) {
-            return new Outcome(Verdict.REVIEW, Optional.empty());
+            return Outcome.of(Verdict.REVIEW);
         }
-        return new Outcome(Verdict.ALLOW, Optional.empty());
+        return Outcome.of(Verdict.ALLOW);
     }
 }

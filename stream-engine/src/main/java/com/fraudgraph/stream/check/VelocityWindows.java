@@ -1,9 +1,11 @@
 package com.fraudgraph.stream.check;
 
+import org.apache.kafka.streams.state.ReadOnlyWindowStore;
 import org.apache.kafka.streams.state.WindowStore;
 import org.apache.kafka.streams.state.WindowStoreIterator;
 
 import java.time.Duration;
+import java.time.Instant;
 
 /**
  * Sliding-window counts on top of Kafka Streams WindowStores.
@@ -48,9 +50,18 @@ public final class VelocityWindows {
 
     /** Sum of every bucket that starts in (tsMs − window, tsMs]. Never throws. */
     public WindowAggregate aggregate(String userId, long tsMs) {
-        long from = tsMs - windowMs + 1;
+        return aggregate(store, windowMs, userId, tsMs);
+    }
+
+    /**
+     * Same read against a read-only handle, so the interactive-query read API (and the analyst
+     * agent behind it) sees exactly what the check stage sees. One implementation, no drift.
+     */
+    public static WindowAggregate aggregate(ReadOnlyWindowStore<String, WindowAggregate> store,
+                                            long windowMs, String userId, long tsMs) {
+        Instant from = Instant.ofEpochMilli(tsMs - windowMs + 1);
         WindowAggregate total = WindowAggregate.EMPTY;
-        try (WindowStoreIterator<WindowAggregate> it = store.fetch(userId, from, tsMs)) {
+        try (WindowStoreIterator<WindowAggregate> it = store.fetch(userId, from, Instant.ofEpochMilli(tsMs))) {
             while (it.hasNext()) {
                 total = total.merge(it.next().value);
             }

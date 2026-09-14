@@ -1,6 +1,6 @@
 from generator.geo import haversine_km
 from generator.injectors.geo import GeoInjector, MIN_FAR_KM
-from generator.injectors.ring import MAX_ACCOUNTS, MIN_ACCOUNTS, RingInjector
+from generator.injectors.ring import MAX_ACCOUNTS, MAX_MULTIPLIER, MIN_ACCOUNTS, RingInjector
 from generator.models import Channel, FraudPattern
 from generator.users import CITIES, far_cities
 
@@ -54,3 +54,20 @@ def test_ring_episode_closes_the_cycle(users, traffic, rng, t0):
         assert minutes <= 30
         amounts = [e.txn.amount for e in ep]
         assert all(b <= a for a, b in zip(amounts, amounts[1:]))  # shrinks each hop
+
+
+def test_ring_amounts_overlap_legitimate_p2p(users, traffic, rng, t0):
+    """The point of drawing ring amounts from the accounts' own spend: a model must not be
+    able to separate rings by amount alone, or the graph feature never earns its place."""
+    inj = RingInjector(users, traffic, rng)
+    ring_amounts = [e.txn.amount for _ in range(60) for e in inj.episode(t0)]
+    legit_amounts = [traffic.sample_amount(u) for u in users for _ in range(20)]
+
+    ring_amounts.sort()
+    legit_amounts.sort()
+    legit_p95 = legit_amounts[int(len(legit_amounts) * 0.95)]
+    # a good chunk of ring hops must sit inside the ordinary P2P range
+    overlap = sum(1 for a in ring_amounts if a <= legit_p95) / len(ring_amounts)
+    assert overlap > 0.25, f"only {overlap:.0%} of ring hops look like ordinary transfers"
+    # and none should be absurd: the multiplier is bounded, so nothing is orders of magnitude out
+    assert max(ring_amounts) <= max(legit_amounts) * MAX_MULTIPLIER

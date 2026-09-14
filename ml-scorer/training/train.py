@@ -131,8 +131,36 @@ def git_sha() -> str | None:
 
 # ---- pipeline -----------------------------------------------------------------
 
+# A model trained on a handful of positives will happily report pr_auc 1.0 and suggest a
+# threshold of 0.05. That happened on 2026-09-12: `make train` ran right after the host woke,
+# the generator had (correctly) skipped ahead rather than backfilled, so "the last hour" held
+# 22 seconds of traffic and 7 fraud labels. The toy model then served live decisions.
+MIN_POSITIVES = 200
+MIN_TEST_WINDOW_MINUTES = 30.0
+
+
+def check_trainable(frame: pd.DataFrame, test_fraction: float) -> None:
+    """Raises unless the frame can support an honest evaluation. Bypass with --force."""
+    positives = int(frame["y"].sum())
+    if positives < MIN_POSITIVES:
+        raise ValueError(
+            f"only {positives} fraud labels in the window (need {MIN_POSITIVES}); "
+            f"widen --hours or let the demo run longer, or pass --force to register it anyway"
+        )
+    _, test = time_split(frame, test_fraction)
+    minutes = (test["ts"].iloc[-1] - test["ts"].iloc[0]).total_seconds() / 60
+    if minutes < MIN_TEST_WINDOW_MINUTES:
+        raise ValueError(
+            f"test window is only {minutes:.1f} minutes (need {MIN_TEST_WINDOW_MINUTES}); "
+            f"metrics from it would not mean anything. Widen --hours, or pass --force"
+        )
+
+
 def train_version(frame: pd.DataFrame, registry: Registry, version: str | None = None,
-                  test_fraction: float = 0.2, n_estimators: int = 200, max_depth: int = 6) -> tuple[str, dict]:
+                  test_fraction: float = 0.2, n_estimators: int = 200, max_depth: int = 6,
+                  force: bool = False) -> tuple[str, dict]:
+    if not force:
+        check_trainable(frame, test_fraction)
     version = version or registry.next_version()
     train, test = time_split(frame, test_fraction)
     clf = fit(train, n_estimators=n_estimators, max_depth=max_depth)
@@ -196,6 +224,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-depth", type=int, default=6)
     ap.add_argument("--reload-url", default=os.environ.get("SCORER_RELOAD_URL", "http://localhost:8000/reload"))
     ap.add_argument("--no-reload", action="store_true")
+    ap.add_argument("--force", action="store_true", help="register the version even if the window is too small to evaluate")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stderr)
 
@@ -205,7 +234,7 @@ def main(argv: list[str] | None = None) -> int:
              100 * frame["y"].mean(), frame["ts"].iloc[0], frame["ts"].iloc[-1])
 
     version, meta = train_version(frame, Registry(pathlib.Path(args.registry)), args.version,
-                                  args.test_fraction, args.n_estimators, args.max_depth)
+                                  args.test_fraction, args.n_estimators, args.max_depth, args.force)
     metrics_table = json.loads((Registry(pathlib.Path(args.registry)).path(version) / "metrics.json").read_text())
     print(f"\nmodel {version}: pr_auc={meta['metrics']['pr_auc']} roc_auc={meta['metrics']['roc_auc']} "
           f"train={meta['split']['train_rows']} test={meta['split']['test_rows']} positives={meta['positives']}")

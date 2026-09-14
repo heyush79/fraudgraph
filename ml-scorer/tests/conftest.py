@@ -18,7 +18,7 @@ from scorer.model import Registry  # noqa: E402
 from training.train import train_version  # noqa: E402
 
 
-def synthetic_frame(n: int = 3000, seed: int = 0) -> pd.DataFrame:
+def synthetic_frame(n: int = 5000, seed: int = 0) -> pd.DataFrame:
     """Legit traffic plus three planted patterns that mirror the generator's injectors."""
     rng = np.random.default_rng(seed)
     X = pd.DataFrame({

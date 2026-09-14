@@ -1,0 +1,230 @@
+{
+  "sweep": [
+    {
+      "threshold": 0.05,
+      "tp": 5,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "flagged_rate": 0.00455
+    },
+    {
+      "threshold": 0.1,
+      "tp": 5,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "flagged_rate": 0.00455
+    },
+    {
+      "threshold": 0.15,
+      "tp": 5,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "flagged_rate": 0.00455
+    },
+    {
+      "threshold": 0.2,
+      "tp": 5,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "flagged_rate": 0.00455
+    },
+    {
+      "threshold": 0.25,
+      "tp": 5,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "flagged_rate": 0.00455
+    },
+    {
+      "threshold": 0.3,
+      "tp": 5,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "flagged_rate": 0.00455
+    },
+    {
+      "threshold": 0.35,
+      "tp": 5,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "flagged_rate": 0.00455
+    },
+    {
+      "threshold": 0.4,
+      "tp": 5,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "flagged_rate": 0.00455
+    },
+    {
+      "threshold": 0.45,
+      "tp": 5,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "flagged_rate": 0.00455
+    },
+    {
+      "threshold": 0.5,
+      "tp": 5,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "flagged_rate": 0.00455
+    },
+    {
+      "threshold": 0.55,
+      "tp": 5,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "flagged_rate": 0.00455
+    },
+    {
+      "threshold": 0.6,
+      "tp": 5,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "flagged_rate": 0.00455
+    },
+    {
+      "threshold": 0.65,
+      "tp": 5,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "flagged_rate": 0.00455
+    },
+    {
+      "threshold": 0.7,
+      "tp": 5,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "flagged_rate": 0.00455
+    },
+    {
+      "threshold": 0.75,
+      "tp": 5,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "flagged_rate": 0.00455
+    },
+    {
+      "threshold": 0.8,
+      "tp": 5,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "flagged_rate": 0.00455
+    },
+    {
+      "threshold": 0.85,
+      "tp": 5,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "flagged_rate": 0.00455
+    },
+    {
+      "threshold": 0.9,
+      "tp": 5,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "flagged_rate": 0.00455
+    },
+    {
+      "threshold": 0.95,
+      "tp": 5,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "flagged_rate": 0.00455
+    },
+    {
+      "threshold": 0.97,
+      "tp": 5,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "flagged_rate": 0.00455
+    },
+    {
+      "threshold": 0.98,
+      "tp": 5,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "flagged_rate": 0.00455
+    },
+    {
+      "threshold": 0.99,
+      "tp": 5,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "flagged_rate": 0.00455
+    }
+  ],
+  "per_pattern_recall": {
+    "RING": {
+      "positives": 5,
+      "recall": 1.0
+    }
+  }
+}

@@ -131,6 +131,68 @@ services:
     volumes:
       - stream-state:/var/lib/fraudgraph/state
 
+  case-service:
+    build:
+      context: ./case-service
+    container_name: fraudgraph-case-service
+    profiles: ["demo"]
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8082:8082"
+    environment:
+      FRAUDGRAPH_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      FRAUDGRAPH_DB_URL: jdbc:postgresql://postgres:5432/fraudgraph
+      FRAUDGRAPH_REDIS_HOST: redis
+      FRAUDGRAPH_ENGINE_URL: http://stream-engine:8081
+      FRAUDGRAPH_AGENT_ENABLED: ${FRAUDGRAPH_AGENT_ENABLED:-true}
+      FRAUDGRAPH_AGENT_URL: http://analyst-agent:8000
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8082/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  analyst-agent:
+    build:
+      context: ./analyst-agent
+    container_name: fraudgraph-analyst-agent
+    profiles: ["demo"]
+    depends_on:
+      case-service:
+        condition: service_started
+    ports:
+      # 8000 belongs to ml-scorer's admin API, so the agent takes 8010 on the host
+      - "8010:8000"
+    environment:
+      FRAUDGRAPH_CASE_SERVICE_URL: http://case-service:8082
+      FRAUDGRAPH_LLM_PROVIDER: ${FRAUDGRAPH_LLM_PROVIDER:-groq}
+      FRAUDGRAPH_LLM_MODEL: ${FRAUDGRAPH_LLM_MODEL:-openai/gpt-oss-120b}
+      FRAUDGRAPH_CHROMA_PATH: /app/chroma
+      # empty is fine: the agent then serves /health with status NO_MODEL and the case
+      # service's hand-off queue gives up after its retries, which breaks nothing else
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    volumes:
+      - ./analyst-agent/chroma:/app/chroma
+
+  dashboard:
+    build:
+      context: ./dashboard
+    container_name: fraudgraph-dashboard
+    profiles: ["demo"]
+    depends_on:
+      case-service:
+        condition: service_started
+    ports:
+      - "3000:80"
+
   generator:
     build:
       context: ./generator

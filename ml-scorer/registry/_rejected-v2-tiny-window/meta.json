@@ -1,0 +1,51 @@
+{
+  "version": "v2",
+  "trained_at": "2026-09-12T23:39:52+00:00",
+  "git_sha": "dd1368b",
+  "features": [
+    "cnt_1m",
+    "cnt_5m",
+    "cnt_1h",
+    "sum_1h",
+    "amt_z",
+    "geo_speed_kmh",
+    "secs_since_last",
+    "merchant_risk_tier",
+    "node_degree",
+    "in_cycle",
+    "component_size",
+    "channel"
+  ],
+  "rows": 5486,
+  "positives": 7,
+  "split": {
+    "test_fraction": 0.2,
+    "train_rows": 4388,
+    "test_rows": 1098,
+    "train_from": "2026-09-12T23:38:01.318000+00:00",
+    "train_to": "2026-09-12T23:39:30.892000+00:00",
+    "test_from": "2026-09-12T23:39:30.937000+00:00",
+    "test_to": "2026-09-12T23:39:52.780000+00:00"
+  },
+  "params": {
+    "n_estimators": 200,
+    "max_depth": 6,
+    "scale_pos_weight": 2193.0
+  },
+  "metrics": {
+    "pr_auc": 1.0,
+    "roc_auc": 1.0
+  },
+  "suggested_thresholds": {
+    "block": 0.05,
+    "review": 0.05,
+    "block_min_precision": 0.98
+  },
+  "feature_importance_gain": {
+    "sum_1h": 795.592,
+    "node_degree": 41.178,
+    "cnt_5m": 28.747,
+    "channel": 24.762,
+    "component_size": 18.762
+  }
+}

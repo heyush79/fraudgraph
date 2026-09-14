@@ -73,6 +73,8 @@ class TopologyTest {
         assertThat(d.features()).containsEntry("cnt1m", 1).containsEntry("cnt1h", 1).containsEntry("sum1h", 250.0).containsEntry("merchantRiskTier", 0).containsEntry("channel", "CARD");
         assertThat(d.latencyMs()).isGreaterThanOrEqualTo(0L); // end to end from the txn's own ts
         assertThat(d.signals()).isEmpty();
+        assertThat(d.merchantId()).isEqualTo("m_GROC_0001");
+        assertThat(d.merchantCategory()).isEqualTo("GROC");
         assertThat(d.features()).containsEntry("amtZ", 0.0).containsEntry("secsSinceLast", -1.0).containsEntry("componentSize", 1);
         assertThat(dlq.isEmpty()).isTrue();
     }
@@ -185,6 +187,15 @@ class TopologyTest {
         assertThat(out.get(0).firedRules()).containsExactly(HardBlockMerchantRule.CODE);
         assertThat(out.get(0).features()).containsEntry("merchantRiskTier", 3);
         assertThat(out.get(1).firedRules()).containsExactly(AmountCapRule.CODE);
+        // the merchant reaches the audit log, and the rule's evidence reaches the signals
+        assertThat(out.get(0).merchantId()).isEqualTo("m_CRYPTO_0013");
+        assertThat(out.get(0).merchantCategory()).isEqualTo("CRYPTO");
+        assertThat(out.get(0).signals()).singleElement().satisfies(s -> {
+            assertThat(s.code()).isEqualTo(HardBlockMerchantRule.CODE);
+            assertThat(s.evidence()).containsEntry("merchantId", "m_CRYPTO_0013");
+        });
+        assertThat(out.get(1).signals()).singleElement().satisfies(s ->
+                assertThat(s.evidence()).containsEntry("capInr", 200000.0));
     }
 
     @Test

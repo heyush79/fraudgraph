@@ -4,9 +4,12 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * In-memory P2P transfer graph (LLD §3.5). Adjacency capped at {@code maxEdgesPerNode}
@@ -95,5 +98,71 @@ public final class TransactionGraph {
 
     public synchronized int nodeCount() {
         return adjacency.size();
+    }
+
+    /**
+     * What the read API returns: the live sub-graph within {@code depth} hops of {@code root},
+     * plus any cycles the root itself sits on. Field names follow LLD §6.1's
+     * "nodes, edges, cycles, component size".
+     */
+    public record Neighborhood(List<Node> nodes, List<Edge> edges, List<List<String>> cycles, int componentSize) {
+        public record Node(String id, int degree, int depth) {}
+        public record Edge(String src, String dst, double amount, long tsMs) {}
+    }
+
+    /**
+     * Breadth-first walk of live out-edges from {@code root}, at most {@code depth} hops.
+     * Bounded by the same 50-edges-per-node cap as detection, so the worst case is 50^depth
+     * links; callers cap depth at 2 (LLD §6.1).
+     */
+    public synchronized Neighborhood neighborhood(String root, int depth, long nowMs) {
+        if (root == null) return new Neighborhood(List.of(), List.of(), List.of(), 1);
+        Map<String, Integer> seen = new LinkedHashMap<>();
+        List<Neighborhood.Edge> edges = new ArrayList<>();
+        Deque<String> frontier = new ArrayDeque<>();
+        seen.put(root, 0);
+        frontier.add(root);
+        while (!frontier.isEmpty()) {
+            String node = frontier.poll();
+            int d = seen.get(node);
+            if (d >= depth) continue;
+            for (Edge e : liveEdges(node, nowMs)) {
+                edges.add(new Neighborhood.Edge(node, e.dst(), e.amount(), e.tsMs()));
+                if (!seen.containsKey(e.dst())) {
+                    seen.put(e.dst(), d + 1);
+                    frontier.add(e.dst());
+                }
+            }
+        }
+        List<Neighborhood.Node> nodes = new ArrayList<>(seen.size());
+        for (var entry : seen.entrySet()) {
+            nodes.add(new Neighborhood.Node(entry.getKey(), liveEdges(entry.getKey(), nowMs).size(), entry.getValue()));
+        }
+        return new Neighborhood(nodes, edges, cyclesThrough(root, nowMs), components.componentSizeIfKnown(root));
+    }
+
+    /**
+     * Cycles the root sits on, one per out-edge that closes one, de-duplicated by node set.
+     * This is the same bounded DFS the ring check runs, asked after the fact instead of on the
+     * hot path, so the analyst agent's "is this user in a ring" answer and the engine's
+     * RING_SUSPECT signal can never disagree.
+     */
+    private List<List<String>> cyclesThrough(String root, long nowMs) {
+        List<List<String>> found = new ArrayList<>();
+        Set<Set<String>> seenSets = new HashSet<>();
+        for (Edge e : liveEdges(root, nowMs)) {
+            List<String> cycle = CycleDetector.findCycle(root, e.dst(), maxCycleDepth, node -> liveDestinations(node, nowMs));
+            if (!cycle.isEmpty() && seenSets.add(new HashSet<>(cycle))) {
+                found.add(cycle);
+            }
+        }
+        return found;
+    }
+
+    private List<Edge> liveEdges(String node, long nowMs) {
+        Deque<Edge> edges = adjacency.get(node);
+        if (edges == null) return List.of();
+        expire(edges, nowMs);
+        return List.copyOf(edges);
     }
 }

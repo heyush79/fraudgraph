@@ -16,15 +16,29 @@ class RuleEngineTest {
             new HardBlockMerchantRule(List.of("m_CRYPTO_0013"))));
 
     @Test
-    void sanctionedMerchantBlocks() {
+    void sanctionedMerchantBlocksAndNamesTheMerchant() {
         var out = engine.apply(Fixtures.txn("u", "m_CRYPTO_0013", 10.0, Fixtures.T0), List.of(), ScoreResult.notScored());
-        assertThat(out).contains(new RuleEngine.Outcome(HardBlockMerchantRule.CODE, Verdict.BLOCK));
+        assertThat(out).isPresent();
+        assertThat(out.get().ruleCode()).isEqualTo(HardBlockMerchantRule.CODE);
+        assertThat(out.get().verdict()).isEqualTo(Verdict.BLOCK);
+        // the agent has to cite why; a blocked merchant with no merchant named is not citable
+        assertThat(out.get().signal().code()).isEqualTo(HardBlockMerchantRule.CODE);
+        assertThat(out.get().signal().severity()).isEqualTo(1.0);
+        assertThat(out.get().signal().evidence())
+                .containsEntry("merchantId", "m_CRYPTO_0013")
+                .containsEntry("merchantCategory", "CRYPTO")
+                .containsKey("reason");
     }
 
     @Test
-    void amountOverCapBlocks() {
+    void amountOverCapBlocksAndQuotesTheCap() {
         var out = engine.apply(Fixtures.txn("u", 200_000.01, Fixtures.T0), List.of(), ScoreResult.notScored());
-        assertThat(out).contains(new RuleEngine.Outcome(AmountCapRule.CODE, Verdict.BLOCK));
+        assertThat(out).isPresent();
+        assertThat(out.get().ruleCode()).isEqualTo(AmountCapRule.CODE);
+        assertThat(out.get().signal().evidence())
+                .containsEntry("amount", 200_000.01)
+                .containsEntry("capInr", 200_000.0)
+                .containsEntry("currency", "INR");
         assertThat(engine.apply(Fixtures.txn("u", 200_000.0, Fixtures.T0), List.of(), ScoreResult.notScored())).isEmpty();
     }
 
@@ -33,7 +47,7 @@ class RuleEngineTest {
         Rule boom = new Rule() {
             public String code() { return "BOOM"; }
             public int priority() { return -1; }
-            public Optional<Verdict> apply(com.fraudgraph.stream.model.Transaction t, List<com.fraudgraph.stream.model.RiskSignal> s, ScoreResult m) { throw new IllegalStateException(); }
+            public Optional<Fired> apply(com.fraudgraph.stream.model.Transaction t, List<com.fraudgraph.stream.model.RiskSignal> s, ScoreResult m) { throw new IllegalStateException(); }
         };
         var e = new RuleEngine(List.of(new AmountCapRule(1), boom, new HardBlockMerchantRule(List.of("m_X_0"))));
         var out = e.apply(Fixtures.txn("u", "m_X_0", 5.0, Fixtures.T0), List.of(), ScoreResult.notScored());

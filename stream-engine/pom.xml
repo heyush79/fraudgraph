@@ -128,6 +128,35 @@
           </execution>
         </executions>
       </plugin>
+      <!--
+        protobuf-maven-plugin adds the generated directories to the compile source roots at
+        build time, which javac sees but an IDE importing the POM does not: VS Code / Eclipse
+        would flag `com.fraudgraph.scoring.v1` as unresolved in GrpcScoringClient and the two
+        scoring tests, even though `mvn test` is green. Declaring the roots here makes them
+        part of the project model, so every IDE picks them up. Maven de-duplicates roots, so
+        this does not double-compile anything.
+      -->
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>build-helper-maven-plugin</artifactId>
+        <version>3.6.0</version>
+        <executions>
+          <execution>
+            <id>add-generated-proto-sources</id>
+            <phase>generate-sources</phase>
+            <goals>
+              <goal>add-source</goal>
+            </goals>
+            <configuration>
+              <sources>
+                <source>${project.build.directory}/generated-sources/protobuf/java</source>
+                <source>${project.build.directory}/generated-sources/protobuf/grpc-java</source>
+              </sources>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
       <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>

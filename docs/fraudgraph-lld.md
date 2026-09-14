@@ -285,7 +285,14 @@ CREATE TABLE case_events (                     -- append-only audit trail per ca
 ### 5.2 Components
 
 - `DecisionConsumer` (`@KafkaListener` on `fraud.decisions`): every decision → WebSocket broadcast (live feed); REVIEW/BLOCK → upsert case → `POST analyst-agent/investigate {caseId}` (async, fire-and-forget with retry queue).
-- REST: `GET /cases?status=`, `GET /cases/{id}`, `PATCH /cases/{id}/status`, plus **agent tool endpoints**: `GET /internal/users/{id}/history?hours=24`, `GET /internal/graph/{userId}/neighborhood?depth=2` (proxied from stream-engine's read API).
+
+*Amendments (Phase 4):*
+- **Feed frames are batched, not per-decision.** At 50 tps a frame per decision is 50 socket writes per client per second and a ticker no human can read. Ticks are queued and flushed as one JSON array every 200 ms. The queue is bounded at 2000; past the cap the oldest ALLOW ticks are dropped first and flagged ones are kept, so a sleeping laptop cannot grow the heap and cannot cost you a BLOCK row. A newly connected client is backfilled with the last 200 ticks so a fresh tab is not an empty box.
+- **Consumer starts at `latest`, not `earliest`.** The decisions topic keeps 7 days; replaying it on a first start would manufacture tens of thousands of stale cases. Restarts resume from the committed offset, so nothing in flight is lost.
+- **The engine grew a read API** (`/read/users/{id}/windows`, `/read/users/{id}/profile`, `/read/graph/{id}/neighborhood`) implemented with Kafka Streams interactive queries. §6.1 assumed one existed; it did not until now. Single instance means every key is local; multiple instances would need `queryMetadataForKey` plus an RPC hop to the owning instance.
+- **Redis finally has its one job.** Per §3.4 it is for cross-service reads only: `case-service` keeps a capped, 24 h-expiring list of each user's recent decisions there, which is what `get_user_history` returns. Storing all 50 decisions a second in Postgres would be the wrong store, and the engine's hot path still never touches Redis.
+- **`GET /stats`** was added for the dashboard header. Not in the original API list.
+- REST: `GET /cases?status=`, `GET /cases/{id}`, `PATCH /cases/{id}/status`, plus **agent tool endpoints**: `GET /internal/users/{id}/history?hours=24`, `GET /internal/users/{id}/windows`, `GET /internal/graph/{userId}/neighborhood?depth=2` (the last two proxied from stream-engine's read API). Closed cases are terminal: `CLOSED_FRAUD` and `CLOSED_FP` reject further transitions with 409, because the audit trail and the Phase 5 eval harness both count one outcome per case.
 - WebSocket `/ws/feed`: decision ticker for the dashboard — this is what makes the demo feel alive.
 
 ---
@@ -313,6 +320,13 @@ class AgentState(TypedDict):
 
 Tools (each is a thin HTTP client to your own services — the agent has **no direct DB or Kafka access**, a real security boundary you can talk about):
 
+*Amendments (Phase 5):*
+- **`triage` is deterministic, not a model call.** The fired rules already say what the engine suspected, so spending a rate-limited request to restate them is waste. Hypotheses are looked up from the rule codes; the model's judgement is spent on investigating and writing.
+- **The report carries the evidence it cites.** `evidence_refs` originally pointed into a list that existed only inside the agent process, which made every citation unfalsifiable from outside. The stored report now embeds the numbered evidence, so a human on the dashboard can check any single claim.
+- **Violations accumulate across attempts.** The escalated report reports every violation seen, not just the last attempt's. Without that, a retry returning nothing parseable replaced "claimed 250 transactions when the evidence said 18" with "no report was produced", hiding the actual reason.
+- **Provider is a config value, not Anthropic.** `FRAUDGRAPH_LLM_PROVIDER` takes `groq`, `ollama` or `gemini` and only `agent/llm.py` knows the difference. The project runs on a free tier; the graph, tools, schema and verify node are all provider-independent.
+- **Closed cases are indexed by a periodic task**, since a case is closed by a human minutes or hours after the report is written. The agent discovers them by polling `/cases?status=CLOSED_*`, the same way everything else does, because it has no database access.
+
 | Tool | Backs onto | Returns |
 |---|---|---|
 | `get_user_history(user_id, hours)` | case-service internal API | recent txns + profile stats |
@@ -331,11 +345,20 @@ Report schema forces citations:
   "recommended_action": "CONFIRM_BLOCK|RELEASE|ESCALATE" }
 ```
 
-`verify` checks every `evidence_refs` index exists in `state.evidence` and that numbers quoted in claims appear in the referenced evidence payloads. Fail → one retry through `investigate`, then escalate with `UNCERTAIN`. **This is a hallucination guard implemented as code, not prompt-begging** — the single most differentiating thing in the project for AI Engineer interviews.
+`verify` checks every `evidence_refs` index exists in `state.evidence`, that it points at a tool call which **succeeded** (a failed call carries no data and must not be citable), and that numbers quoted in claims appear in the referenced evidence payloads. Fail → one retry through `investigate`, then escalate with `UNCERTAIN` and the unsupported claims removed.
+
+*Amendment (Phase 5) — the three tolerances that make the number check usable rather than pedantic:*
+1. **Rounding within one percent passes.** A report writing "13,499 km/h" or "about 13,500" for an evidence value of 13499.34 is being readable, not wrong.
+2. **Collection sizes count as evidence.** "Five accounts formed a cycle" is a true statement about a six-element cycle list whose first and last entries are the same account, so both the length and the distinct count of every cited collection are available. Refusing this pushes the model towards vaguer prose, not more accurate prose.
+3. **Integers below three are not policed.** "One of the two accounts" is English, and small integers appear in almost any payload by coincidence, so requiring a match there produces noise instead of signal.
+
+Numbers inside ISO timestamps are stripped before extraction: they say *when*, not *how many*. **This is a hallucination guard implemented as code, not prompt-begging** — the single most differentiating thing in the project for AI Engineer interviews.
 
 Embeddings: closed reports → `sentence-transformers all-MiniLM-L6-v2` → Chroma. Similar-case retrieval means the agent can say "matches case #12 (confirmed ring, 2 days ago)".
 
 ### 6.3 Agent eval harness
+
+*Amendment (Phase 5): `fraud_type` accuracy turned out to be close to tautological.* Triage shows the agent which rules fired, and `GEO_IMPOSSIBLE` maps to `GEO` with no reasoning required, so the first run scored 100% while measuring nothing. The headline metric is now whether the agent made the **right call**, since the engine never tells it whether the transaction is genuinely fraudulent. Cases are scored by kind: planted fraud and policy breaches should be confirmed, engine false positives should be released or escalated. The original run also scored sanctioned-merchant cases as "should have declined" because the generator plants no label for them, which penalised the agent for being right; those are now a separate kind. And a run that exhausts the provider's daily quota has its starved cases excluded rather than counted as wrong answers.
 
 Because the generator knows ground truth, you get automatic agent evals: for each injected pattern, does the report's `fraud_type` match the injected type? How many tool calls did it need? Script: `evals/run.py` → accuracy per fraud type + mean tool calls → table in the README. Nobody has agent eval tables in portfolio projects; this is your differentiator.
 

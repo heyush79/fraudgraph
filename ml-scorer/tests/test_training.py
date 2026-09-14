@@ -32,6 +32,22 @@ def test_build_frame_joins_labels_on_txn_id():
         build_frame([], {})
 
 
+def test_tiny_window_is_refused_unless_forced(frame, tmp_path):
+    """The v2 incident: 5,486 rows, 7 positives, a 22-second test window, pr_auc 1.0."""
+    from scorer.model import Registry
+    from training.train import check_trainable, train_version
+    tiny = frame.head(400)
+    with pytest.raises(ValueError, match="fraud labels"):
+        check_trainable(tiny, 0.2)
+    positives = frame[frame["y"] == 1]
+    brief = pd.concat([positives, frame[frame["y"] == 0].head(len(positives))]).sort_values("ts")
+    brief = brief.assign(ts=pd.date_range("2026-09-12", periods=len(brief), freq="1s", tz="UTC"))
+    with pytest.raises(ValueError, match="test window"):
+        check_trainable(brief, 0.2)   # enough positives, but only ~8 minutes of test data
+    version, meta = train_version(brief, Registry(tmp_path), n_estimators=5, max_depth=2, force=True)
+    assert version == "v1" and meta["positives"] == len(positives)
+
+
 def test_fit_requires_both_classes(frame):
     with pytest.raises(ValueError, match="both classes"):
         fit(frame[frame["y"] == 0])

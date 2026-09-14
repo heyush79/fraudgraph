@@ -21,7 +21,8 @@ Python generator → Kafka `transactions.raw` (keyed by userId, 6 partitions) �
 - Hot-path state lives in Kafka Streams state stores (RocksDB + changelogs), NOT Redis. Redis is only for cross-service reads.
 - Transaction graph is in-memory (bounded DFS depth ≤5, ≤50 edges/node, 24h edge TTL, union-find for components). No Neo4j in v1.
 - ML scorer is called synchronously with a 150ms timeout behind a Resilience4j circuit breaker; open breaker → rules-only DEGRADED mode, never stall the stream.
-- LLM/agent is NEVER on the decisioning hot path — it runs async after a case is created.
+- LLM/agent is NEVER on the decisioning hot path — it runs async after a case is created. Not on the case-creation path either: the hand-off is fire-and-forget behind a bounded retry queue.
+- The agent reads ONLY through case-service `/internal/*`. No DB handle, no Kafka client, no state-store access. Do not add one.
 - Agent reports must cite evidence: the `verify` node programmatically checks every claim's evidence_refs. Keep this guard; it is the point of the project.
 - Training data split by TIME, never randomly.
 - Exactly-once (`processing.guarantee=exactly_once_v2`) + txnId dedup store; case creation idempotent via `UNIQUE(txn_id)` + ON CONFLICT DO NOTHING.
@@ -35,14 +36,16 @@ Python generator → Kafka `transactions.raw` (keyed by userId, 6 partitions) �
 
 ## Commands
 - `docker compose up -d` — kafka, redis, postgres
+- `make dash` — dashboard in Vite dev mode against a local case-service
 - `make demo` — full stack + generator with fraud injection + dashboard
 - `make train` — train a scorer version from fraud.decisions + transactions.labels (TRAIN_HOURS=24) and hot-reload it; `make evaluate` prints the threshold sweep
 - `make bench` — latency benchmark (generator at high tps, no fraud)
+- `make evals` — score the analyst agent against the generator's ground truth (needs `GROQ_API_KEY`)
 
 ## Current status
 <!-- keep this section updated as you build -->
 - [x] Phase 1: generator + Kafka + rules-only stream engine (scaffolded 2026-09-11; velocity windows + dedup store live here, profile/geo/graph stores in Phase 2)
 - [x] Phase 2: state stores (profiles, geo) + graph checks + ring/geo injectors (2026-09-12)
 - [x] Phase 3: ML scorer + gRPC + circuit breaker (2026-09-12; trains from the fraud.decisions feature log, see LLD §4.3 amendment)
-- [ ] Phase 4: case service + dashboard
-- [ ] Phase 5: analyst agent + evals
+- [x] Phase 4: case service + dashboard (2026-09-13; engine gained a /read API, Redis holds per-user recent decisions)
+- [x] Phase 5: analyst agent + evals (2026-09-14; runs on Groq's free tier, provider is one env var)

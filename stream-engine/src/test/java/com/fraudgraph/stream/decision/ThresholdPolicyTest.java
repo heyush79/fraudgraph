@@ -31,6 +31,14 @@ class ThresholdPolicyTest {
         var out = policy.decide(Fixtures.txn("u", "m_BAD_0001", 1.0, Fixtures.T0), List.of(), ScoreResult.scored(0.01, List.of(), "v1"));
         assertThat(out.verdict()).isEqualTo(Verdict.BLOCK);
         assertThat(out.ruleCode()).contains(HardBlockMerchantRule.CODE);
+        assertThat(out.ruleSignal()).isPresent();
+        assertThat(out.ruleSignal().get().evidence()).containsEntry("merchantId", "m_BAD_0001");
+    }
+
+    @Test
+    void ordinaryVerdictsCarryNoRuleSignal() {
+        assertThat(policy.decide(txn, List.of(), ScoreResult.notScored()).ruleSignal()).isEmpty();
+        assertThat(policy.decide(txn, List.of(sig("A", 0.9), sig("B", 0.9)), ScoreResult.notScored()).ruleSignal()).isEmpty();
     }
 
     @Test
