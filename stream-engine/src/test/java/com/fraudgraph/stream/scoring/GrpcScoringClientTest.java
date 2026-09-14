@@ -20,6 +20,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class GrpcScoringClientTest {
+    /**
+     * A deadline generous enough that only a genuinely hung call trips it. Tests that are not
+     * about the deadline use this: the first gRPC call in a JVM loads a great deal of the
+     * stack, and on a shared CI runner that alone can outlast a production-sized 150 ms
+     * budget, which failed this class once for reasons that had nothing to do with the code.
+     */
+    private static final long GENEROUS_MS = 30_000;
+
     private Server server;
     private ManagedChannel channel;
 
@@ -55,7 +63,7 @@ class GrpcScoringClientTest {
 
     @Test
     void mapsAScoredResponse() throws Exception {
-        ScoreResult r = start(0, null, 150).score(fv());
+        ScoreResult r = start(0, null, GENEROUS_MS).score(fv());
         assertThat(r.isScored()).isTrue();
         assertThat(r.probability()).isEqualTo(0.91);
         assertThat(r.modelVersion()).isEqualTo("v3");
@@ -64,17 +72,27 @@ class GrpcScoringClientTest {
 
     @Test
     void deadlineIsEnforced() throws Exception {
-        GrpcScoringClient slow = start(400, null, 100);
+        // Warm the stack first, so the measurement below is of the deadline and not of gRPC
+        // loading its classes. This is the only test here that asserts on elapsed time.
+        start(0, null, GENEROUS_MS).score(fv());
+        tearDown();
+
+        long serverDelayMs = 5_000;
+        GrpcScoringClient slow = start(serverDelayMs, null, 200);
         long t0 = System.nanoTime();
         assertThatThrownBy(() -> slow.score(fv()))
                 .isInstanceOf(StatusRuntimeException.class)
                 .satisfies(e -> assertThat(((StatusRuntimeException) e).getStatus().getCode()).isEqualTo(Status.Code.DEADLINE_EXCEEDED));
-        assertThat((System.nanoTime() - t0) / 1_000_000).isLessThan(350);
+        long elapsedMs = (System.nanoTime() - t0) / 1_000_000;
+        // The claim is that the client gives up long before the server would have answered,
+        // which is what stops a slow scorer stalling the stream. Asserting a tight upper
+        // bound on a shared runner would only measure the runner.
+        assertThat(elapsedMs).isLessThan(serverDelayMs / 2);
     }
 
     @Test
     void serverErrorsPropagateAsStatus() throws Exception {
-        GrpcScoringClient noModel = start(0, Status.FAILED_PRECONDITION.withDescription("no model loaded"), 150);
+        GrpcScoringClient noModel = start(0, Status.FAILED_PRECONDITION.withDescription("no model loaded"), GENEROUS_MS);
         AtomicReference<StatusRuntimeException> caught = new AtomicReference<>();
         try { noModel.score(fv()); } catch (StatusRuntimeException e) { caught.set(e); }
         assertThat(caught.get()).isNotNull();
