@@ -40,12 +40,23 @@ def test_tiny_window_is_refused_unless_forced(frame, tmp_path):
     with pytest.raises(ValueError, match="fraud labels"):
         check_trainable(tiny, 0.2)
     positives = frame[frame["y"] == 1]
+    # enough positives overall, but the test slice is only a couple of minutes wide
     brief = pd.concat([positives, frame[frame["y"] == 0].head(len(positives))]).sort_values("ts")
-    brief = brief.assign(ts=pd.date_range("2026-09-12", periods=len(brief), freq="1s", tz="UTC"))
+    brief = brief.assign(ts=pd.date_range("2026-09-12", periods=len(brief), freq="500ms", tz="UTC"))
     with pytest.raises(ValueError, match="test window"):
-        check_trainable(brief, 0.2)   # enough positives, but only ~8 minutes of test data
+        check_trainable(brief, 0.2)
     version, meta = train_version(brief, Registry(tmp_path), n_estimators=5, max_depth=2, force=True)
     assert version == "v1" and meta["positives"] == len(positives)
+
+
+def test_a_thin_test_slice_is_refused_even_over_a_long_window(frame):
+    """The check that actually matters: a wide window whose test slice holds almost no fraud."""
+    from training.train import check_trainable
+    thin = pd.concat([frame[frame["y"] == 1].head(210), frame[frame["y"] == 0].head(5000)])
+    thin = thin.sort_values("y", ascending=False).reset_index(drop=True)   # all fraud at the front
+    thin = thin.assign(ts=pd.date_range("2026-09-12", periods=len(thin), freq="10s", tz="UTC"))
+    with pytest.raises(ValueError, match="test slice holds only"):
+        check_trainable(thin, 0.2)
 
 
 def test_fit_requires_both_classes(frame):

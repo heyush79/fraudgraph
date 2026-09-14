@@ -81,6 +81,24 @@ def test_starved_cases_are_excluded_from_quality_metrics():
     assert s["typeAgreement"] == 1.0
 
 
+def test_starvation_during_drafting_also_counts_as_starved():
+    """The investigation can succeed and the drafting call still be refused. That case
+    measures the quota, not the agent."""
+    from evals.run import score, starved
+    r = result("RING", "UNCERTAIN", passed=False, tools=4, action="ESCALATE",
+               notes=["investigate: called ['get_graph_neighborhood']",
+                      "draft_report: model call failed (Error code: 429 ...)"])
+    assert starved(r) is True
+    assert score([r])["starvedCases"] == 1
+
+
+def test_prose_instead_of_json_is_the_agents_fault_not_the_quotas():
+    from evals.run import starved
+    r = result("RING", "UNCERTAIN", passed=False, tools=4, action="ESCALATE",
+               notes=["investigate: called ['x']", "draft_report: no parseable JSON returned"])
+    assert starved(r) is False
+
+
 def test_a_genuine_verification_failure_is_still_counted_against_the_agent():
     bad = result("VELOCITY", "UNCERTAIN", passed=False, tools=4, action="ESCALATE",
                  notes=["investigate: called ['x']", "draft_report: drafted", "verify: attempt 2, 1 violation(s)"])
@@ -124,3 +142,35 @@ def test_indexed_summary_carries_narrative_and_mechanism():
     text = summary_text(case)
     assert "four accounts" in text and "RING_SUSPECT" in text and "type: RING" in text
     assert summary_text({"firedRules": [], "reportDoc": None}) == "type: UNKNOWN"
+
+
+def test_the_rule_filter_is_pushed_to_the_api(monkeypatch):
+    """Filtering client-side after paging recent cases reaches three rings where the database
+    holds eighty, so the rule has to travel to the query."""
+    import evals.run as run
+
+    asked: dict = {}
+    monkeypatch.setattr(run.httpx, "get", lambda *a, **k: type("R", (), {"json": lambda self: {"status": "UP", "provider": "p", "model": "m"}})())
+    monkeypatch.setattr(run, "read_labels", lambda *a, **k: {"2": "RING"})
+
+    def fake_fetch(url, limit, rule=None):
+        asked["rule"] = rule
+        asked["limit"] = limit
+        return [{"caseId": "b", "txnId": "2", "firedRules": ["RING_SUSPECT"]}]
+
+    monkeypatch.setattr(run, "fetch_cases", fake_fetch)
+    monkeypatch.setattr(run, "investigate", lambda url, cid, t: {"report": {
+        "fraud_type": "RING", "recommended_action": "CONFIRM_BLOCK",
+        "verification": {"passed": True, "toolCallsUsed": 2}}})
+
+    assert run.main(["--rules", "ring_suspect", "--limit", "5", "--sleep", "0", "--out", "/tmp/fg-eval-test"]) == 0
+    assert asked["rule"] == "RING_SUSPECT"     # uppercased and passed through
+    assert asked["limit"] == 5                 # no overfetch needed any more
+
+
+def test_the_rule_filter_says_so_when_nothing_matches(monkeypatch):
+    import evals.run as run
+    monkeypatch.setattr(run.httpx, "get", lambda *a, **k: type("R", (), {"json": lambda self: {"status": "UP", "provider": "p", "model": "m"}})())
+    monkeypatch.setattr(run, "read_labels", lambda *a, **k: {})
+    monkeypatch.setattr(run, "fetch_cases", lambda url, limit, rule=None: [])
+    assert run.main(["--rules", "RING_SUSPECT", "--limit", "5", "--sleep", "0"]) == 1

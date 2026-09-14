@@ -128,6 +128,31 @@ def test_unparseable_output_escalates_rather_than_crashing(settings):
     assert final["report"]["verification"]["passed"] is False
 
 
+def test_a_provider_failure_while_drafting_is_named_as_such(settings):
+    """A 429 during drafting and a model writing prose are different failures. The eval
+    harness reads these notes to decide whether a case measured the agent or the quota."""
+    final, _, _ = run(settings, [
+        {"tools": [("get_window_counts", {"user_id": "u_10903"})]},
+        STOP, RuntimeError("Error code: 429 - rate_limit_exceeded"),
+        STOP, RuntimeError("Error code: 429 - rate_limit_exceeded"),
+    ])
+    notes = " | ".join(final["notes"])
+    assert "draft_report: model call failed" in notes
+    assert "no parseable JSON" not in notes
+    assert final["report"]["fraud_type"] == "UNCERTAIN"
+
+
+def test_prose_instead_of_json_is_reported_differently(settings):
+    final, _, _ = run(settings, [
+        {"tools": [("get_window_counts", {"user_id": "u_10903"})]},
+        STOP, "I believe this is card testing.",
+        STOP, "Still prose, still no JSON.",
+    ])
+    notes = " | ".join(final["notes"])
+    assert "no parseable JSON" in notes
+    assert "model call failed" not in notes
+
+
 def test_a_model_outage_mid_investigation_still_produces_a_report(settings):
     final, _, _ = run(settings, [RuntimeError("rate limited"), GOOD_REPORT, STOP, GOOD_REPORT])
     # the investigate turn failed, so only the case itself is evidence; finding #1 cites

@@ -5,10 +5,7 @@ CREATE TABLE cases (
   user_id      TEXT NOT NULL,
   verdict      TEXT NOT NULL CHECK (verdict IN ('REVIEW','BLOCK')),
   ml_score     DOUBLE PRECISION,
-  -- The full fraud.decisions event, signals and all. JSONB rather than JSON because the
-  -- queries need the containment operators; the cost is that it is lossless as JSON but not
-  -- byte-preserving (whitespace normalised, object keys reordered).
-  decision_doc JSONB NOT NULL,
+  decision_doc JSONB NOT NULL,                -- the full fraud.decisions event, signals and all
   status       TEXT NOT NULL DEFAULT 'OPEN'
                CHECK (status IN ('OPEN','INVESTIGATING','REPORTED','CLOSED_FRAUD','CLOSED_FP')),
   report_doc   JSONB,                         -- analyst agent output, filled in Phase 5

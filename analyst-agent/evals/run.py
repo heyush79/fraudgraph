@@ -78,12 +78,15 @@ def read_labels(bootstrap: str, hours: float) -> dict[str, str]:
     return labels
 
 
-def fetch_cases(case_service: str, limit: int) -> list[dict[str, Any]]:
+def fetch_cases(case_service: str, limit: int, rule: str | None = None) -> list[dict[str, Any]]:
+    """Filtering is done by the API, not here. RING_SUSPECT is ~1% of cases, so paging recent
+    cases and discarding the rest reaches three rings where the database holds eighty."""
     out: list[dict[str, Any]] = []
+    params: dict[str, Any] = {"rule": rule} if rule else {}
     with httpx.Client(base_url=case_service, timeout=20) as http:
         offset = 0
         while len(out) < limit:
-            page = http.get("/cases", params={"limit": min(200, limit - len(out)), "offset": offset}).json()
+            page = http.get("/cases", params={**params, "limit": min(200, limit - len(out)), "offset": offset}).json()
             items = page.get("items") or []
             if not items:
                 break
@@ -114,7 +117,10 @@ def starved(result: dict[str, Any]) -> bool:
     are excluded from accuracy and reported on their own line.
     """
     notes = " | ".join(result.get("notes") or [])
-    return "model call failed" in notes and "drafted" not in notes
+    # "model call failed" appears for both the investigate and the draft phase; either one
+    # means the provider never answered. "drafted" means a report was produced despite it,
+    # so the case does measure the agent.
+    return "model call failed" in notes and "draft_report: drafted" not in notes
 
 
 HARD_RULES = ("HARD_BLOCK_MERCHANT", "AMOUNT_CAP")
@@ -294,6 +300,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--timeout", type=float, default=300.0, help="per-case timeout")
     ap.add_argument("--out", default="evals/results")
     ap.add_argument("--only-labelled", action="store_true", help="skip cases with no ground truth")
+    ap.add_argument("--rules", default=None, metavar="CODE",
+                    help="only cases where this rule code fired, filtered by the case API. "
+                         "Rings are ~1%% of traffic because only the hop that closes a cycle "
+                         "fires, so a random sample never contains one: --rules RING_SUSPECT")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stderr)
 
@@ -306,7 +316,9 @@ def main(argv: list[str] | None = None) -> int:
     labels = read_labels(args.bootstrap_servers, args.hours)
     log.info("ground truth: %d planted transactions in the last %.0fh", len(labels), args.hours)
 
-    cases = fetch_cases(args.case_service_url, args.limit * 4 if args.only_labelled else args.limit)
+    rule = args.rules.strip().upper() if args.rules else None
+    overfetch = args.limit * 4 if args.only_labelled else args.limit
+    cases = fetch_cases(args.case_service_url, overfetch, rule)
     selected = []
     for c in cases:
         truth = labels.get(c["txnId"])
@@ -315,6 +327,11 @@ def main(argv: list[str] | None = None) -> int:
         selected.append({**c, "truth": truth})
         if len(selected) >= args.limit:
             break
+    if rule and not selected:
+        print(f"no cases where {rule} fired; is that pattern being injected?", file=sys.stderr)
+        return 1
+    if rule and len(selected) < args.limit:
+        log.warning("only %d case(s) where %s fired, asked for %d", len(selected), rule, args.limit)
     log.info("investigating %d cases (%d with ground truth)",
              len(selected), sum(1 for c in selected if c["truth"]))
 

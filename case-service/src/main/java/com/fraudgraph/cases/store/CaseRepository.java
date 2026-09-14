@@ -20,6 +20,19 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
+/**
+ * All case reads and writes.
+ *
+ * <p>{@code decision_doc} and {@code report_doc} are JSONB rather than JSON because the queries
+ * need the containment operators. The cost is that JSONB is lossless as JSON but not
+ * byte-preserving: whitespace is normalised, object keys are reordered and duplicates dropped.
+ * Everything downstream parses these columns, so it costs nothing, but assert on parsed
+ * structure rather than substrings.
+ *
+ * <p>Migrations under {@code db/migration} are immutable once applied. Editing one changes its
+ * checksum and Flyway refuses to start against any database that already ran it, which is a
+ * deployment outage rather than a warning. Add a {@code V2__} instead.
+ */
 @Repository
 public class CaseRepository {
     private static final String SUMMARY_COLUMNS =
@@ -80,12 +93,23 @@ public class CaseRepository {
 
     public record Page(List<FraudCase> items, long total, int limit, int offset) {}
 
-    public Page list(CaseStatus status, int limit, int offset) {
-        String where = status == null ? "" : " WHERE status = ?";
-        Object[] args = status == null ? new Object[0] : new Object[]{status.name()};
-        Long total = jdbc.queryForObject("SELECT count(*) FROM cases" + where, Long.class, args);
+    public Page list(CaseStatus status, String rule, int limit, int offset) {
+        List<String> clauses = new ArrayList<>();
+        List<Object> args = new ArrayList<>();
+        if (status != null) {
+            clauses.add("status = ?");
+            args.add(status.name());
+        }
+        if (rule != null && !rule.isBlank()) {
+            // jsonb_exists rather than the `?` operator: JDBC would treat that operator as a
+            // bind placeholder and the statement would never parse.
+            clauses.add("jsonb_exists(decision_doc->'firedRules', ?)");
+            args.add(rule);
+        }
+        String where = clauses.isEmpty() ? "" : " WHERE " + String.join(" AND ", clauses);
+        Long total = jdbc.queryForObject("SELECT count(*) FROM cases" + where, Long.class, args.toArray());
 
-        List<Object> pageArgs = new ArrayList<>(List.of(args));
+        List<Object> pageArgs = new ArrayList<>(args);
         pageArgs.add(limit);
         pageArgs.add(offset);
         List<FraudCase> items = jdbc.query(

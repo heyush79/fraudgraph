@@ -8,6 +8,7 @@
 #                TRAIN_HOURS=24 how far back to read;  make evaluate  prints the latest threshold sweep
 #   make proto   regenerate gRPC code on both sides from proto/scoring.proto
 #   make dash    dashboard in Vite dev mode against a locally running case-service
+#   make db-ui   browse Postgres at http://localhost:8080 (Adminer); make db-ui-stop to remove
 #   make evals   score the analyst agent against the generator's ground truth (EVAL_LIMIT=30)
 #   make test    all unit tests (Java + Python), no broker needed
 #   make down    stop everything, keep volumes;  make clean  also drops volumes
@@ -24,7 +25,7 @@ TRAIN_HOURS    ?= 24
 EVAL_LIMIT     ?= 30
 EVAL_HOURS     ?= 6
 
-.PHONY: up demo bench train train-local evaluate evals proto dash test test-java test-java-db test-python down clean logs
+.PHONY: up demo bench train train-local evaluate evals proto dash db-ui db-ui-stop test test-java test-java-db test-python db-forget-migrations down clean logs
 
 up:
 	$(COMPOSE) up -d
@@ -65,6 +66,20 @@ evals:
 dash:
 	cd dashboard && npm install && npm run dev
 
+# Postgres is not HTTP, so a browser needs a client in front of it.
+db-ui:
+	$(COMPOSE) --profile tools up -d adminer
+	@echo
+	@echo "  http://localhost:8080"
+	@echo "  system   PostgreSQL"
+	@echo "  server   postgres      (the compose service name, not localhost)"
+	@echo "  username fraudgraph"
+	@echo "  password fraudgraph"
+	@echo "  database fraudgraph"
+
+db-ui-stop:
+	$(COMPOSE) --profile tools rm -sf adminer
+
 proto:
 	cd ml-scorer && uv run python scripts/gen_proto.py
 	cd stream-engine && mvn -q generate-sources
@@ -81,6 +96,19 @@ test-java:
 # The container-backed case-service tests against a database you start yourself. Use this
 # where Testcontainers cannot reach the Docker engine (Docker Desktop 29), so the tests are
 # debuggable locally instead of only ever running in CI.
+# Migrations under case-service/src/main/resources/db/migration are IMMUTABLE once applied.
+# Editing one changes its checksum and Flyway then refuses to start against every database
+# that already ran it, which is an outage rather than a warning. Add a V2__ file instead.
+# This target exists for the one case where you edited a migration by mistake on a demo
+# database and just want to move on; it drops the recorded history so the next start
+# re-validates from scratch. Never run it anywhere that matters.
+db-forget-migrations:
+	@echo "This drops flyway_schema_history. Only do this on a throwaway database."
+	@read -p "type yes to continue: " ok && [ "$$ok" = "yes" ]
+	docker exec fraudgraph-postgres psql -U fraudgraph -d fraudgraph \
+		-c "DELETE FROM flyway_schema_history"
+	$(COMPOSE) --profile demo restart case-service
+
 test-java-db:
 	docker rm -f fg-test-db >/dev/null 2>&1 || true
 	docker run -d --name fg-test-db -e POSTGRES_USER=fraudgraph -e POSTGRES_PASSWORD=fraudgraph \

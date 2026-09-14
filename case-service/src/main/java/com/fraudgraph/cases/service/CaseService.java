@@ -67,8 +67,8 @@ public class CaseService {
         return Optional.of(caseId);
     }
 
-    public CaseRepository.Page list(CaseStatus status, int limit, int offset) {
-        return repository.list(status, limit, offset);
+    public CaseRepository.Page list(CaseStatus status, String rule, int limit, int offset) {
+        return repository.list(status, rule, limit, offset);
     }
 
     public Optional<FraudCase> get(UUID caseId) {

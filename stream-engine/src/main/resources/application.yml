@@ -64,8 +64,11 @@ fraudgraph:
       halfOpenCalls: 5           # probes allowed through while half-open before deciding to close or re-open
 
   thresholds:
-    block: 0.95                  # from the v1 sweep (2026-09-12, 1.64M rows): precision 0.926 / recall 0.924; 0.85 would auto-block at 0.845 precision
-    review: 0.60                 # v1 sweep: precision 0.70 / recall 0.975 — a review queue that misses ~2.5% of fraud at 30% analyst noise
+    # Read off the v2 sweep (2026-09-14, 277k rows, the first model trained on realistic ring
+    # amounts). v2 is a weaker and more honest model than v1: PR-AUC fell 0.97 -> 0.87 once
+    # rings stopped being separable by amount alone, so both thresholds moved.
+    block: 0.99                  # precision 0.985 / recall 0.573 — the lowest level clearing the 98% precision bar for auto-blocking
+    review: 0.60                 # precision 0.564 / recall 0.874 — deliberately below the best-F1 point (0.95): a noisier queue that misses 13% of fraud beats a clean one that misses 30%
     minSignalsForReview: 2       # two independent weak signals (severity >= 0.5) corroborate each other
     minSignalSeverity: 0.5       # a signal at half its overshoot scale is "clearly over", not borderline
 

@@ -32,11 +32,15 @@ public class CaseController {
 
     @GetMapping("/cases")
     public CasePage list(@RequestParam(required = false) String status,
+                         @RequestParam(required = false) String rule,
                          @RequestParam(defaultValue = "50") int limit,
                          @RequestParam(defaultValue = "0") int offset) {
         CaseStatus parsed = parseStatus(status);
         int bounded = Math.max(1, Math.min(MAX_LIMIT, limit));
-        CaseRepository.Page page = cases.list(parsed, bounded, Math.max(0, offset));
+        // `rule` filters on a code in the decision's firedRules. RING_SUSPECT is ~1% of cases
+        // because only the hop that closes a cycle fires, so the eval harness cannot reach one
+        // by paging recent cases; the filter has to be server side.
+        CaseRepository.Page page = cases.list(parsed, rule, bounded, Math.max(0, offset));
         return new CasePage(page.items(), page.total(), page.limit(), page.offset());
     }
 

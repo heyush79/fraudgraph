@@ -136,7 +136,15 @@ def git_sha() -> str | None:
 # the generator had (correctly) skipped ahead rather than backfilled, so "the last hour" held
 # 22 seconds of traffic and 7 fraud labels. The toy model then served live decisions.
 MIN_POSITIVES = 200
-MIN_TEST_WINDOW_MINUTES = 30.0
+# The test slice has to contain enough fraud to mean anything. This is the check that
+# matters; the wall-clock floor below is only there to catch a window so short that the
+# traffic in it cannot be representative.
+MIN_TEST_POSITIVES = 50
+# Deliberately low. An earlier version used 30 minutes and rejected a perfectly good frame
+# of 5,968 positives because throughput had been lower at the start of the window, so the
+# last 20% of ROWS spanned only 20 minutes of clock. Row count is what the model sees;
+# wall clock only guards against a window too brief to contain a daily pattern at all.
+MIN_TEST_WINDOW_MINUTES = 10.0
 
 
 def check_trainable(frame: pd.DataFrame, test_fraction: float) -> None:
@@ -148,11 +156,17 @@ def check_trainable(frame: pd.DataFrame, test_fraction: float) -> None:
             f"widen --hours or let the demo run longer, or pass --force to register it anyway"
         )
     _, test = time_split(frame, test_fraction)
+    test_positives = int(test["y"].sum())
+    if test_positives < MIN_TEST_POSITIVES:
+        raise ValueError(
+            f"the test slice holds only {test_positives} fraud labels (need {MIN_TEST_POSITIVES}); "
+            f"every metric from it would be noise. Widen --hours, or pass --force"
+        )
     minutes = (test["ts"].iloc[-1] - test["ts"].iloc[0]).total_seconds() / 60
     if minutes < MIN_TEST_WINDOW_MINUTES:
         raise ValueError(
             f"test window is only {minutes:.1f} minutes (need {MIN_TEST_WINDOW_MINUTES}); "
-            f"metrics from it would not mean anything. Widen --hours, or pass --force"
+            f"that is too brief to be representative. Widen --hours, or pass --force"
         )
 
 

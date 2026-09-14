@@ -152,11 +152,15 @@ def build_graph(settings: Settings, tools: Tools, llm: Any):
         from .llm import parse_json_object
         try:
             reply = llm.invoke(messages)
-            raw = parse_json_object(getattr(reply, "content", "") or "")
         except Exception as e:  # noqa: BLE001
-            log.warning("draft failed: %s", e)
-            raw = None
+            # The provider refusing the call and the model writing prose are different
+            # failures, and conflating them made a rate-limited eval run look like a quality
+            # problem. The note has to say which, because that is what the eval harness reads
+            # to decide whether a case measures the agent or the quota.
+            log.warning("draft turn failed: %s", e)
+            return {"report": None, "notes": [f"draft_report: model call failed ({e})"]}
 
+        raw = parse_json_object(getattr(reply, "content", "") or "")
         if raw is None:
             return {"report": None, "notes": ["draft_report: no parseable JSON returned"]}
         try:

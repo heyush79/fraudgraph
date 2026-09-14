@@ -142,7 +142,7 @@ class CaseRepositoryTest {
         for (int i = 0; i < 5; i++) {
             insert(UUID.randomUUID(), i % 2 == 0 ? Verdict.BLOCK : Verdict.REVIEW);
         }
-        CaseRepository.Page all = repository.list(null, 2, 0);
+        CaseRepository.Page all = repository.list(null, null, 2, 0);
         assertThat(all.total()).isEqualTo(5);
         assertThat(all.items()).hasSize(2);
         assertThat(all.items().get(0).createdAt()).isAfterOrEqualTo(all.items().get(1).createdAt());
@@ -150,9 +150,9 @@ class CaseRepositoryTest {
 
         UUID moved = all.items().get(0).caseId();
         repository.updateStatus(moved, CaseStatus.INVESTIGATING);
-        assertThat(repository.list(CaseStatus.INVESTIGATING, 10, 0).total()).isEqualTo(1);
-        assertThat(repository.list(CaseStatus.OPEN, 10, 0).total()).isEqualTo(4);
-        assertThat(repository.list(null, 2, 4).items()).hasSize(1);
+        assertThat(repository.list(CaseStatus.INVESTIGATING, null, 10, 0).total()).isEqualTo(1);
+        assertThat(repository.list(CaseStatus.OPEN, null, 10, 0).total()).isEqualTo(4);
+        assertThat(repository.list(null, null, 2, 4).items()).hasSize(1);
     }
 
     @Test
@@ -185,6 +185,29 @@ class CaseRepositoryTest {
         assertThat(repository.verdictCountsSince(java.time.Duration.ofHours(1)))
                 .containsEntry("block", 1L).containsEntry("review", 2L);
         assertThat(repository.verdictCountsSince(java.time.Duration.ofSeconds(0)).values()).allMatch(n -> n == 0L);
+    }
+
+    @Test
+    void listFiltersByAFiredRuleCode() {
+        // RING_SUSPECT is ~1% of real traffic, so the eval harness cannot page its way to one
+        insert(UUID.randomUUID(), Verdict.BLOCK);                       // DOC fires VELOCITY_1M + GEO_IMPOSSIBLE
+        UUID ringTxn = UUID.randomUUID();
+        repository.insertIfAbsent(ringTxn, "u_2", Verdict.REVIEW, 0.4,
+                """
+                {"txnId":"%s","userId":"u_2","firedRules":["RING_SUSPECT"],
+                 "signals":[{"code":"RING_SUSPECT","severity":1.0,
+                             "evidence":{"cycle":["u_2","u_3","u_2"]}}]}
+                """.formatted(ringTxn));
+
+        assertThat(repository.list(null, "RING_SUSPECT", 10, 0).total()).isEqualTo(1);
+        assertThat(repository.list(null, "RING_SUSPECT", 10, 0).items())
+                .singleElement().satisfies(c -> assertThat(c.txnId()).isEqualTo(ringTxn));
+        assertThat(repository.list(null, "GEO_IMPOSSIBLE", 10, 0).total()).isEqualTo(1);
+        assertThat(repository.list(null, "NO_SUCH_RULE", 10, 0).total()).isZero();
+        // combines with the status filter rather than replacing it
+        assertThat(repository.list(CaseStatus.OPEN, "RING_SUSPECT", 10, 0).total()).isEqualTo(1);
+        assertThat(repository.list(CaseStatus.CLOSED_FP, "RING_SUSPECT", 10, 0).total()).isZero();
+        assertThat(repository.list(null, "  ", 10, 0).total()).isEqualTo(2);   // blank means no filter
     }
 
     @Test
