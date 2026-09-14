@@ -1,0 +1,172 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the same branch makes the previous run irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------- Java ----
+  stream-engine:
+    name: stream-engine (JUnit + TopologyTestDriver)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+          cache: maven
+      # The gRPC classes are generated from proto/scoring.proto at build time, so the
+      # checkout must include it; running from the repo root rather than the module
+      # directory is what makes ../proto resolve.
+      - name: Test
+        run: mvn -B -ntp test
+        working-directory: stream-engine
+      - name: Publish test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stream-engine-surefire
+          path: stream-engine/target/surefire-reports/
+          if-no-files-found: ignore
+
+  case-service:
+    name: case-service (JUnit + Testcontainers)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+          cache: maven
+      # Linux runners expose the Docker socket at /var/run/docker.sock, so the
+      # container-backed repository test actually runs here. It skips itself on
+      # Docker Desktop 29, whose engine API the bundled docker-java cannot negotiate,
+      # which is why CI is the only place the ON CONFLICT idempotency is covered.
+      - name: Test
+        run: mvn -B -ntp test
+        working-directory: case-service
+      - name: Fail if the container-backed tests silently skipped
+        run: |
+          if grep -rq 'skipped="[1-9]' target/surefire-reports/*.xml 2>/dev/null; then
+            echo "::error::Testcontainers tests skipped in CI; Docker should be available here"
+            grep -rh 'skipped="[1-9]' target/surefire-reports/*.xml | head -5
+            exit 1
+          fi
+          echo "all tests ran, none skipped"
+        working-directory: case-service
+      - name: Publish test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: case-service-surefire
+          path: case-service/target/surefire-reports/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------- Python ----
+  generator:
+    name: generator (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv run --extra dev pytest -q
+        working-directory: generator
+
+  ml-scorer:
+    name: ml-scorer (pytest + feature parity)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      # XGBoost links against the OpenMP runtime, which is not in the base image.
+      - name: Install OpenMP runtime
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgomp1
+      # Generates scorer/gen from the shared proto; the tests import it.
+      - run: uv run python scripts/gen_proto.py
+        working-directory: ml-scorer
+      - run: uv run --extra dev pytest -q
+        working-directory: ml-scorer
+
+  analyst-agent:
+    name: analyst-agent (pytest, no API key)
+    runs-on: ubuntu-latest
+    env:
+      # Deliberately empty. The graph tests replay a scripted model and the verify node is
+      # pure Python, so the whole suite must pass with no provider credential. If a test
+      # ever starts needing one, this job is where that becomes visible.
+      GROQ_API_KEY: ''
+      GOOGLE_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv run --extra dev pytest -q
+        working-directory: analyst-agent
+
+  # ----------------------------------------------------------- Front end ----
+  dashboard:
+    name: dashboard (tsc + vite build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci
+        working-directory: dashboard
+      - run: npm run build
+        working-directory: dashboard
+
+  # ------------------------------------------------------------- Images -----
+  images:
+    name: docker images build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      # Catches Dockerfile rot that the test jobs cannot: a missing build-context file,
+      # a stale base image, a dependency that no longer resolves. Built, never pushed.
+      - name: Build every service image
+        run: |
+          set -e
+          docker buildx build --load -f stream-engine/Dockerfile  -t fg/stream-engine  .
+          docker buildx build --load -f case-service/Dockerfile   -t fg/case-service   case-service
+          docker buildx build --load -f ml-scorer/Dockerfile      -t fg/ml-scorer      .
+          docker buildx build --load -f generator/Dockerfile      -t fg/generator      generator
+          docker buildx build --load -f analyst-agent/Dockerfile  -t fg/analyst-agent  analyst-agent
+          docker buildx build --load -f dashboard/Dockerfile      -t fg/dashboard      dashboard
+
+  # A single required check, so branch protection needs one entry rather than seven.
+  ci:
+    name: all green
+    if: always()
+    needs: [stream-engine, case-service, generator, ml-scorer, analyst-agent, dashboard, images]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check results
+        run: |
+          echo '${{ toJSON(needs) }}' | tee results.json
+          if echo '${{ toJSON(needs) }}' | grep -q '"result": *"\(failure\|cancelled\)"'; then
+            echo "::error::at least one job did not pass"
+            exit 1
+          fi
+          echo "every job passed"

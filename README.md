@@ -1,5 +1,8 @@
 # FraudGraph
 
+[![CI](https://github.com/heyush79/fraudgraph/actions/workflows/ci.yml/badge.svg)](https://github.com/heyush79/fraudgraph/actions/workflows/ci.yml)
+
+
 Real-time payment fraud detection: a verdict per transaction (ALLOW / REVIEW / BLOCK) in under a second, and an evidence-cited analyst report for every flagged case.
 
 Design docs: [CLAUDE.md](CLAUDE.md) (project memory) and [docs/fraudgraph-lld.md](docs/fraudgraph-lld.md) (low-level design).
@@ -22,7 +25,7 @@ Prerequisites: Docker, JDK 17, Maven, Python 3.11+ with [uv](https://github.com/
 docker compose up -d          # kafka (KRaft, localhost:29092), redis, postgres; creates topics
 make demo                     # + stream-engine + generator (velocity, ring, geo injection at 2%)
 GEN_TPS=5 GEN_DURATION=300 make demo   # slower, stops after 5 minutes
-make test                     # JUnit (TopologyTestDriver) + pytest, no broker needed
+make test                     # all 163 tests: JUnit + pytest, no broker and no API key needed
 make train                    # after ~15 min of demo traffic: train v1 from the feature log, hot-reload the scorer
 make evaluate                 # threshold sweep + per-pattern recall of the latest model
 ```
@@ -109,6 +112,22 @@ Recall per injected pattern at 0.95: geo 0.867, ring 0.991, velocity 0.908. Top 
 Every report's claims survived the citation check, at a mean of 2.94 tool calls against a budget of 4.
 
 Three honest caveats, all of which the eval table itself prints. Fraud-type agreement was 100%, and it means almost nothing: triage hands the agent the rule codes the engine fired, so `GEO_IMPOSSIBLE` maps to `GEO` with no reasoning required, which is why the right-call table is the headline instead. The false-positive sample is a single case, far too small to conclude anything, and it is the cell that matters most because it is the only group where declining is correct. And the daily quota caps a run at roughly 25 cases, so these numbers come from one small sample rather than a stable measurement.
+
+## CI
+
+Seven jobs in parallel on every push and pull request, gated behind one required check so branch protection needs a single entry:
+
+| job | what it proves |
+|---|---|
+| stream-engine | 62 JUnit tests including the whole topology under `TopologyTestDriver` |
+| case-service | 18 tests **including the Testcontainers ones**, which skip on Docker Desktop 29 locally, so CI is the only place the idempotent case creation is actually exercised |
+| generator | 22 pytest |
+| ml-scorer | 21 pytest including the mandatory train-vs-serve feature-parity test |
+| analyst-agent | 40 pytest with the provider credentials explicitly blank, proving the suite needs no API key |
+| dashboard | `tsc --noEmit` and a production Vite build |
+| images | all six Docker images build, catching Dockerfile rot the test jobs cannot |
+
+The case-service job fails if the container-backed tests skip rather than run. A test that quietly skips in CI is worse than no test, because it reports green while covering nothing.
 
 ## Known limitations
 
