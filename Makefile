@@ -24,7 +24,7 @@ TRAIN_HOURS    ?= 24
 EVAL_LIMIT     ?= 30
 EVAL_HOURS     ?= 6
 
-.PHONY: up demo bench train train-local evaluate evals proto dash test test-java test-python down clean logs
+.PHONY: up demo bench train train-local evaluate evals proto dash test test-java test-java-db test-python down clean logs
 
 up:
 	$(COMPOSE) up -d
@@ -77,6 +77,17 @@ test: test-java test-python
 test-java:
 	cd stream-engine && mvn -q test
 	cd case-service && DOCKER_HOST=$${DOCKER_HOST:-unix://$$HOME/.docker/run/docker.sock} mvn -q test
+
+# The container-backed case-service tests against a database you start yourself. Use this
+# where Testcontainers cannot reach the Docker engine (Docker Desktop 29), so the tests are
+# debuggable locally instead of only ever running in CI.
+test-java-db:
+	docker rm -f fg-test-db >/dev/null 2>&1 || true
+	docker run -d --name fg-test-db -e POSTGRES_USER=fraudgraph -e POSTGRES_PASSWORD=fraudgraph \
+		-e POSTGRES_DB=fraudgraph -p 5433:5432 postgres:16-alpine >/dev/null
+	@until docker exec fg-test-db pg_isready -U fraudgraph >/dev/null 2>&1; do sleep 1; done
+	cd case-service && mvn -q test -Dfraudgraph.test.jdbcUrl=jdbc:postgresql://localhost:5433/fraudgraph; \
+		status=$$?; docker rm -f fg-test-db >/dev/null 2>&1; exit $$status
 
 test-python:
 	cd generator && uv run --extra dev pytest -q

@@ -11,6 +11,11 @@ import java.util.UUID;
  * A case as the API returns it. {@code decisionDoc} and {@code reportDoc} are passed through as
  * raw JSON straight from the JSONB columns: re-parsing them into Java types would be work that
  * only risks losing a field the engine or the agent added.
+ *
+ * <p>Lossless as JSON, but not byte-for-byte. JSONB normalises whitespace, reorders object keys
+ * and drops duplicate keys, so the text that comes back is semantically identical to what the
+ * engine published and textually different. Everything downstream parses it, so this costs
+ * nothing; assert on parsed structure rather than substrings.
  */
 @JsonInclude(JsonInclude.Include.ALWAYS)
 public record FraudCase(

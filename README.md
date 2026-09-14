@@ -127,7 +127,13 @@ Seven jobs in parallel on every push and pull request, gated behind one required
 | dashboard | `tsc --noEmit` and a production Vite build |
 | images | all six Docker images build, catching Dockerfile rot the test jobs cannot |
 
-The case-service job fails if the container-backed tests skip rather than run. A test that quietly skips in CI is worse than no test, because it reports green while covering nothing.
+The case-service job fails if the container-backed tests skip rather than run. A test that quietly skips in CI is worse than no test, because it reports green while covering nothing. That guard earned its place on the first run: the tests had never executed anywhere, and one of them was asserting on a JSONB substring, which fails because Postgres normalises whitespace and reorders object keys on the way back out.
+
+To debug those tests locally where Testcontainers cannot reach Docker Desktop 29:
+
+```bash
+make test-java-db      # starts a throwaway Postgres on 5433, runs them against it, tears it down
+```
 
 ## Known limitations
 

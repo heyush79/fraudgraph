@@ -1,5 +1,6 @@
 package com.fraudgraph.cases.store;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fraudgraph.cases.model.CaseEvent;
 import com.fraudgraph.cases.model.CaseStatus;
@@ -12,9 +13,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIf;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.junit.jupiter.api.AfterAll;
 import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.util.List;
 import java.util.Optional;
@@ -27,15 +27,25 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code ON CONFLICT DO NOTHING} and JSONB handling, neither of which an in-memory database
  * would reproduce faithfully. Flyway runs the same migration the service ships.
  */
-@Testcontainers
-@EnabledIf("dockerAvailable")
+@EnabledIf("databaseAvailable")
 class CaseRepositoryTest {
     /**
-     * Skips instead of failing where Docker is not reachable, so {@code mvn test} stays green on
-     * a machine without it. On macOS, Docker Desktop puts its socket in the user's home rather
-     * than /var/run, so Testcontainers needs DOCKER_HOST set; the Makefile exports it.
+     * Point the test at a database you started yourself:
+     * {@code mvn test -Dfraudgraph.test.jdbcUrl=jdbc:postgresql://localhost:5433/fraudgraph}
+     *
+     * <p>Testcontainers is the default and is what CI uses. The override exists because Docker
+     * Desktop 29's engine API cannot be negotiated by the bundled docker-java client, so on
+     * such a machine these tests would otherwise only ever skip, and a test that runs only in
+     * CI is a test you cannot debug.
+     *
+     * <p>The container is started by hand rather than through {@code @Testcontainers}: that
+     * extension starts the {@code @Container} field before {@code @EnabledIf} is consulted, so
+     * the override could never take effect.
      */
-    static boolean dockerAvailable() {
+    static final String EXTERNAL_URL = System.getProperty("fraudgraph.test.jdbcUrl");
+
+    static boolean databaseAvailable() {
+        if (external()) return true;
         try {
             return org.testcontainers.DockerClientFactory.instance().isDockerAvailable();
         } catch (Throwable t) {
@@ -43,8 +53,11 @@ class CaseRepositoryTest {
         }
     }
 
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine");
+    static boolean external() {
+        return EXTERNAL_URL != null && !EXTERNAL_URL.isBlank();
+    }
+
+    static PostgreSQLContainer<?> postgres;
 
     static JdbcTemplate jdbc;
     static CaseRepository repository;
@@ -56,11 +69,28 @@ class CaseRepositoryTest {
 
     @BeforeAll
     static void startDatabase() {
-        DriverManagerDataSource ds = new DriverManagerDataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
+        String url, user, pass;
+        if (external()) {
+            url = EXTERNAL_URL;
+            user = System.getProperty("fraudgraph.test.user", "fraudgraph");
+            pass = System.getProperty("fraudgraph.test.password", "fraudgraph");
+        } else {
+            postgres = new PostgreSQLContainer<>("postgres:16-alpine");
+            postgres.start();
+            url = postgres.getJdbcUrl();
+            user = postgres.getUsername();
+            pass = postgres.getPassword();
+        }
+        DriverManagerDataSource ds = new DriverManagerDataSource(url, user, pass);
         ds.setDriverClassName("org.postgresql.Driver");
         Flyway.configure().dataSource(ds).locations("classpath:db/migration").load().migrate();
         jdbc = new JdbcTemplate(ds);
         repository = new CaseRepository(jdbc, new ObjectMapper());
+    }
+
+    @AfterAll
+    static void stopDatabase() {
+        if (postgres != null) postgres.stop();
     }
 
     @BeforeEach
@@ -84,7 +114,7 @@ class CaseRepositoryTest {
     }
 
     @Test
-    void storesTheWholeDecisionAndExtractsFiredRules() {
+    void storesTheWholeDecisionAndExtractsFiredRules() throws Exception {
         UUID txnId = UUID.randomUUID();
         UUID caseId = insert(txnId, Verdict.BLOCK).orElseThrow();
         FraudCase c = repository.findById(caseId).orElseThrow();
@@ -93,9 +123,18 @@ class CaseRepositoryTest {
         assertThat(c.status()).isEqualTo(CaseStatus.OPEN);
         assertThat(c.mlScore()).isEqualTo(0.91);
         assertThat(c.firedRules()).containsExactly("VELOCITY_1M", "GEO_IMPOSSIBLE");
-        assertThat(c.decisionDoc()).contains("\"severity\":1.0");   // signals survive the round trip
         assertThat(c.reportDoc()).isNull();
         assertThat(c.createdAt()).isNotNull();
+
+        // JSONB is lossless as JSON but NOT byte-preserving: Postgres reformats whitespace,
+        // reorders object keys and drops duplicates. So the round trip is asserted on the
+        // parsed structure, never on the text. Everything downstream parses it as JSON, so
+        // this costs nothing; asserting on a substring is what cost an hour of CI.
+        JsonNode doc = new ObjectMapper().readTree(c.decisionDoc());
+        assertThat(doc.at("/signals/0/severity").asDouble()).isEqualTo(1.0);
+        assertThat(doc.at("/signals/0/code").asText()).isEqualTo("VELOCITY_1M");
+        assertThat(doc.at("/signals/0/evidence/count").asInt()).isEqualTo(18);
+        assertThat(doc.at("/txnId").asText()).isEqualTo(txnId.toString());
     }
 
     @Test
