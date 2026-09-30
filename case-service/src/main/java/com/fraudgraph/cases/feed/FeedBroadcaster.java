@@ -14,8 +14,11 @@ import org.springframework.web.socket.WebSocketSession;
 import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Deque;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArraySet;
@@ -41,16 +44,31 @@ public class FeedBroadcaster {
     private final AtomicInteger pendingCount = new AtomicInteger();
     private final Deque<DecisionTick> history = new ArrayDeque<>();
 
+    // Consumption is at-least-once: after a consumer rebalance the case service re-reads the
+    // decisions it had not yet committed, and each would reach every open feed a second time
+    // (seen as ticks ~155 s old reappearing mid-stream). Case creation is idempotent in the
+    // database; this is the feed's equivalent. 20,000 ids is about seven minutes of traffic
+    // at 50 tps, well past any redelivery window observed. Guarded by the history lock.
+    private static final int RECENT_IDS = 20_000;
+    private final Set<String> recentIds = Collections.newSetFromMap(new LinkedHashMap<>(RECENT_IDS * 2, 0.75f) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, Boolean> eldest) {
+            return size() > RECENT_IDS;
+        }
+    });
+
     private final ObjectMapper mapper;
     private final CaseProperties.Feed cfg;
     private final Counter dropped;
     private final Counter sent;
+    private final Counter duplicates;
 
     public FeedBroadcaster(ObjectMapper mapper, CaseProperties props, MeterRegistry metrics) {
         this.mapper = mapper;
         this.cfg = props.feed();
         this.dropped = metrics.counter("fraudgraph_feed_dropped_total");
         this.sent = metrics.counter("fraudgraph_feed_sent_total");
+        this.duplicates = metrics.counter("fraudgraph_feed_duplicates_total");
         metrics.gauge("fraudgraph_feed_sessions", sessions, Set::size);
     }
 
@@ -75,6 +93,10 @@ public class FeedBroadcaster {
 
     public void publish(DecisionTick tick) {
         synchronized (history) {
+            if (tick.txnId() != null && !recentIds.add(tick.txnId())) {
+                duplicates.increment();      // a redelivered decision; every client already has it
+                return;
+            }
             history.addLast(tick);
             while (history.size() > cfg.maxHistory()) history.removeFirst();
         }

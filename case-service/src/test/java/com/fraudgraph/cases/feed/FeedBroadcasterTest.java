@@ -63,6 +63,28 @@ class FeedBroadcasterTest {
     }
 
     @Test
+    void aRedeliveredDecisionReachesTheFeedOnce() throws Exception {
+        // at-least-once consumption: a consumer rebalance replays uncommitted decisions
+        List<String> frames = new ArrayList<>();
+        FeedBroadcaster b = broadcaster(2000, 200);
+        b.register(session(frames));
+        frames.clear();
+        b.publish(tick(Verdict.BLOCK, "t1"));
+        b.publish(tick(Verdict.ALLOW, "t2"));
+        b.flush();
+        b.publish(tick(Verdict.BLOCK, "t1"));          // the replay
+        b.publish(tick(Verdict.ALLOW, "t3"));
+        b.flush();
+        assertThat(frames).hasSize(2);
+        assertThat(mapper.readTree(frames.get(1)).findValuesAsText("txnId")).containsExactly("t3");
+        assertThat(metrics.find("fraudgraph_feed_duplicates_total").counter().count()).isEqualTo(1.0);
+
+        List<String> late = new ArrayList<>();
+        b.register(session(late));                     // and the backfill holds it once
+        assertThat(mapper.readTree(late.get(0)).findValuesAsText("txnId")).containsExactly("t1", "t2", "t3");
+    }
+
+    @Test
     void aFullQueueDropsAllowsBeforeFlaggedDecisions() throws Exception {
         List<String> frames = new ArrayList<>();
         FeedBroadcaster b = broadcaster(4, 200);
