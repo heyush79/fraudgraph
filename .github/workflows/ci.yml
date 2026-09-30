@@ -120,6 +120,17 @@ jobs:
       - run: uv run --extra dev pytest -q
         working-directory: analyst-agent
 
+  showcase:
+    name: showcase recorder (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv run --extra dev pytest -q
+        working-directory: showcase
+
   # ----------------------------------------------------------- Front end ----
   dashboard:
     name: dashboard (tsc + vite build)
@@ -155,11 +166,11 @@ jobs:
           docker buildx build --load -f analyst-agent/Dockerfile  -t fg/analyst-agent  analyst-agent
           docker buildx build --load -f dashboard/Dockerfile      -t fg/dashboard      dashboard
 
-  # A single required check, so branch protection needs one entry rather than seven.
+  # A single required check, so branch protection needs one entry rather than eight.
   ci:
     name: all green
     if: always()
-    needs: [stream-engine, case-service, generator, ml-scorer, analyst-agent, dashboard, images]
+    needs: [stream-engine, case-service, generator, ml-scorer, analyst-agent, showcase, dashboard, images]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
