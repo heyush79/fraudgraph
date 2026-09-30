@@ -5,12 +5,17 @@
 # Kafka runs in KRaft mode (no ZooKeeper). Two listeners:
 #   kafka:9092       -> for containers on the compose network
 #   localhost:29092  -> for processes running on the host (IDE, pytest, mvn)
+#
+# Every published port binds to 127.0.0.1: reachable from this machine, not from the network.
+# FRAUDGRAPH_BIND=0.0.0.0 opens them up (say, to try the dashboard from a phone on the same
+# Wi-Fi). A public deployment never does that; see deploy/, where only the reverse proxy
+# faces the internet.
 services:
   kafka:
     image: apache/kafka:3.8.1
     container_name: fraudgraph-kafka
     ports:
-      - "29092:29092"
+      - "${FRAUDGRAPH_BIND:-127.0.0.1}:29092:29092"
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -49,16 +54,21 @@ services:
       kafka:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-c"]
-    # Partition counts and retention straight from LLD §2. Idempotent (--if-not-exists).
+    # Partition counts and retention straight from LLD §2. Idempotent (--if-not-exists), so a
+    # retention override only applies to topics created after it is set.
+    # KEEP_MS overrides the 7-day retention of the kept topics (deploy/public.env sets 2 days: at
+    # 20 tps a week of decisions is ~12 GB, too much for a free VM's disk).
+    environment:
+      KEEP_MS: ${FRAUDGRAPH_TOPIC_RETENTION_MS:-604800000}
     command:
       - |
         set -e
         T=/opt/kafka/bin/kafka-topics.sh
         B=kafka:9092
         $$T --bootstrap-server $$B --create --if-not-exists --topic transactions.raw    --partitions 6 --replication-factor 1 --config retention.ms=86400000
-        $$T --bootstrap-server $$B --create --if-not-exists --topic transactions.labels --partitions 3 --replication-factor 1 --config retention.ms=604800000
-        $$T --bootstrap-server $$B --create --if-not-exists --topic fraud.decisions     --partitions 6 --replication-factor 1 --config retention.ms=604800000 --config cleanup.policy=delete
-        $$T --bootstrap-server $$B --create --if-not-exists --topic transactions.dlq    --partitions 1 --replication-factor 1 --config retention.ms=604800000
+        $$T --bootstrap-server $$B --create --if-not-exists --topic transactions.labels --partitions 3 --replication-factor 1 --config retention.ms=$$KEEP_MS
+        $$T --bootstrap-server $$B --create --if-not-exists --topic fraud.decisions     --partitions 6 --replication-factor 1 --config retention.ms=$$KEEP_MS --config cleanup.policy=delete
+        $$T --bootstrap-server $$B --create --if-not-exists --topic transactions.dlq    --partitions 1 --replication-factor 1 --config retention.ms=$$KEEP_MS
         $$T --bootstrap-server $$B --list
 
   redis:
@@ -69,7 +79,7 @@ services:
     command: ["redis-server", "--maxmemory", "192mb", "--maxmemory-policy", "allkeys-lru", "--save", ""]
     mem_limit: 256m
     ports:
-      - "6379:6379"
+      - "${FRAUDGRAPH_BIND:-127.0.0.1}:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -81,7 +91,7 @@ services:
     container_name: fraudgraph-postgres
     mem_limit: 384m
     ports:
-      - "5432:5432"
+      - "${FRAUDGRAPH_BIND:-127.0.0.1}:5432:5432"
     environment:
       POSTGRES_USER: fraudgraph
       POSTGRES_PASSWORD: fraudgraph
@@ -108,7 +118,7 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "8080:8080"
+      - "${FRAUDGRAPH_BIND:-127.0.0.1}:8080:8080"
     environment:
       ADMINER_DEFAULT_SERVER: postgres
       ADMINER_DESIGN: dracula
@@ -125,8 +135,8 @@ services:
       kafka-init:
         condition: service_completed_successfully
     ports:
-      - "50051:50051"                  # gRPC scoring
-      - "8000:8000"                    # admin: /health /model /reload /metrics
+      - "${FRAUDGRAPH_BIND:-127.0.0.1}:50051:50051"                  # gRPC scoring
+      - "${FRAUDGRAPH_BIND:-127.0.0.1}:8000:8000"                    # admin: /health /model /reload /metrics
     environment:
       SCORER_REGISTRY: /app/registry
       SCORER_SHAP_MIN_PROB: "0.4"
@@ -157,7 +167,7 @@ services:
         condition: service_started
         required: false
     ports:
-      - "8081:8081"
+      - "${FRAUDGRAPH_BIND:-127.0.0.1}:8081:8081"
     environment:
       FRAUDGRAPH_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       FRAUDGRAPH_KAFKA_STATE_DIR: /var/lib/fraudgraph/state
@@ -179,7 +189,7 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "8082:8082"
+      - "${FRAUDGRAPH_BIND:-127.0.0.1}:8082:8082"
     environment:
       FRAUDGRAPH_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       FRAUDGRAPH_DB_URL: jdbc:postgresql://postgres:5432/fraudgraph
@@ -204,7 +214,7 @@ services:
         condition: service_started
     ports:
       # 8000 belongs to ml-scorer's admin API, so the agent takes 8010 on the host
-      - "8010:8000"
+      - "${FRAUDGRAPH_BIND:-127.0.0.1}:8010:8000"
     environment:
       FRAUDGRAPH_CASE_SERVICE_URL: http://case-service:8082
       FRAUDGRAPH_LLM_PROVIDER: ${FRAUDGRAPH_LLM_PROVIDER:-groq}
@@ -215,6 +225,12 @@ services:
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      # "Ask the analyst" limits, 0 = unlimited. Off for local work; deploy/public.env turns
+      # them on, because a public URL on a free-tier key needs them (agent/ratelimit.py).
+      FRAUDGRAPH_ASK_RATE_IP_MIN: ${FRAUDGRAPH_ASK_RATE_IP_MIN:-0}
+      FRAUDGRAPH_ASK_RATE_IP_DAY: ${FRAUDGRAPH_ASK_RATE_IP_DAY:-0}
+      FRAUDGRAPH_ASK_RATE_GLOBAL_MIN: ${FRAUDGRAPH_ASK_RATE_GLOBAL_MIN:-0}
+      FRAUDGRAPH_ASK_RATE_GLOBAL_DAY: ${FRAUDGRAPH_ASK_RATE_GLOBAL_DAY:-0}
     volumes:
       - ./analyst-agent/chroma:/app/chroma
 
@@ -228,7 +244,7 @@ services:
       case-service:
         condition: service_started
     ports:
-      - "3000:80"
+      - "${FRAUDGRAPH_BIND:-127.0.0.1}:3000:80"
 
   generator:
     build:

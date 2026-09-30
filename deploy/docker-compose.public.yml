@@ -1,0 +1,74 @@
+# Public deployment: one VM serving the live console over HTTPS.
+#
+#   docker compose -f docker-compose.yml -f deploy/docker-compose.public.yml \
+#       --env-file deploy/public.env --profile demo up -d --build
+#
+# (deploy/bootstrap.sh runs exactly that.) What changes from the local stack, and why:
+#
+# - Caddy is the only service listening on the network, on 80 and 443, with automatic HTTPS.
+#   Every other port stays bound to 127.0.0.1 (the base file's default), so Postgres, Kafka,
+#   Redis, the engine and the scorer's /reload are unreachable from outside.
+# - The dashboard is built read-only, and its nginx refuses anything that is not a read or a
+#   question (PUBLIC_MODE). Hiding the status control in the UI alone would be decoration.
+# - The agent answers questions under rate limits (public.env), and the case service does not
+#   hand it every new case: a free-tier key covers dozens of answers a day, not a report per
+#   case per second.
+# - Everything restarts on failure and on reboot.
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: fraudgraph-caddy
+    profiles: ["demo"]
+    restart: unless-stopped
+    mem_limit: 128m
+    depends_on:
+      dashboard:
+        condition: service_started
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"                   # HTTP/3
+    environment:
+      FRAUDGRAPH_DOMAIN: ${FRAUDGRAPH_DOMAIN:?set FRAUDGRAPH_DOMAIN in deploy/public.env}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data                # certificates; losing them means re-issuing, which is rate-limited
+      - caddy-config:/config
+
+  dashboard:
+    build:
+      args:
+        VITE_READ_ONLY: "true"
+    environment:
+      PUBLIC_MODE: "true"
+    restart: unless-stopped
+
+  case-service:
+    environment:
+      FRAUDGRAPH_AGENT_ENABLED: "false"
+    restart: unless-stopped
+
+  analyst-agent:
+    restart: unless-stopped
+
+  stream-engine:
+    restart: unless-stopped
+
+  ml-scorer:
+    restart: unless-stopped
+
+  generator:
+    restart: unless-stopped
+
+  kafka:
+    restart: unless-stopped
+
+  postgres:
+    restart: unless-stopped
+
+  redis:
+    restart: unless-stopped
+
+volumes:
+  caddy-data:
+  caddy-config:

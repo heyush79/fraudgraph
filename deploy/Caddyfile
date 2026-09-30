@@ -1,0 +1,17 @@
+# The only public entry point. Caddy obtains and renews the certificate itself; with no domain
+# of your own, <your-ip-with-dashes>.sslip.io resolves to your IP and works as FRAUDGRAPH_DOMAIN.
+{$FRAUDGRAPH_DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# The dashboard's nginx serves the app and routes /cases, /ws, /agent onward. Caddy
+	# replaces any X-Forwarded-For a client sends with the address it actually saw, which is
+	# what the agent's per-visitor rate limit keys on.
+	reverse_proxy dashboard:80
+}

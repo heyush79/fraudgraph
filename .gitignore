@@ -24,3 +24,6 @@ dashboard/dist/
 /tmp/
 **/state/
 .env
+
+# public deployment settings hold the model key
+deploy/public.env

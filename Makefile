@@ -13,6 +13,11 @@
 #   make dash    dashboard in Vite dev mode against a locally running case-service
 #   make db-ui   browse Postgres at http://localhost:8080 (Adminer); make db-ui-stop to remove
 #   make evals   score the analyst agent against the generator's ground truth (EVAL_LIMIT=30)
+#   make scenario-ring | scenario-geo | scenario-velocity | scenario-policy
+#                one labelled fraud episode now, compressed to a pace you can watch (needs `make demo`)
+#                RING_ACCOUNTS=5 RING_GAP_SECS=15 shape the ring
+#   make recall  what the running system actually caught per fraud pattern (RECALL_HOURS=1)
+#   make share   a temporary public HTTPS URL for this stack (needs cloudflared); see deploy/README.md
 #   make test    all unit tests (Java + Python), no broker needed
 #   make down    stop everything, keep volumes;  make clean  also drops volumes
 
@@ -27,8 +32,12 @@ GEN_DURATION   ?=
 TRAIN_HOURS    ?= 24
 EVAL_LIMIT     ?= 30
 EVAL_HOURS     ?= 6
+RING_ACCOUNTS  ?= 5
+RING_GAP_SECS  ?= 15
+RECALL_HOURS   ?= 1
 
-.PHONY: up lean demo bench train train-local evaluate evals proto dash db-ui db-ui-stop test test-java test-java-db test-python db-forget-migrations down clean logs
+.PHONY: up lean demo bench train train-local evaluate evals recall proto dash db-ui db-ui-stop test test-java test-java-db test-python db-forget-migrations down clean logs \
+	scenario-ring scenario-geo scenario-velocity scenario-policy share
 
 up:
 	$(COMPOSE) up -d
@@ -72,6 +81,30 @@ evaluate:
 evals:
 	cd analyst-agent && uv run --extra dev python -m evals.run \
 		--limit $(EVAL_LIMIT) --hours $(EVAL_HOURS) --agent-url http://localhost:8010
+
+# Production recall, not offline recall: joins the verdicts the engine emitted to the labels.
+# RECALL_SINCE=2026-09-29T16:24:30Z pins the window's start (a before/after comparison).
+recall:
+	cd ml-scorer && uv run python -m training.production_recall --hours $(RECALL_HOURS) $(if $(RECALL_SINCE),--since $(RECALL_SINCE))
+
+# A one-off container from the generator image: the same population, Kafka address and code
+# as the generator, without touching the one that is running.
+SCENARIO := $(COMPOSE) --profile demo run --rm --no-deps -T --entrypoint python generator -m generator.scenario
+scenario-ring:
+	$(SCENARIO) ring --accounts $(RING_ACCOUNTS) --gap-secs $(RING_GAP_SECS)
+
+scenario-geo scenario-velocity scenario-policy: scenario-%:
+	$(SCENARIO) $*
+
+# A public URL for the stack on this machine, for as long as the command runs (Ctrl-C closes it):
+# read-only dashboard, rate-limited analyst, Cloudflare quick tunnel. `make demo` restores.
+SHARE_ENV := $(if $(wildcard .env),--env-file .env) --env-file deploy/share.env
+share:
+	@command -v cloudflared >/dev/null || { echo "needs cloudflared: brew install cloudflared"; exit 1; }
+	$(COMPOSE) -f docker-compose.yml -f deploy/docker-compose.share.yml $(SHARE_ENV) --profile demo \
+		up -d --build dashboard analyst-agent
+	@echo "sharing http://localhost:3000; the public URL appears below (…trycloudflare.com)"
+	cloudflared tunnel --no-autoupdate --url http://localhost:3000
 
 dash:
 	cd dashboard && npm install && npm run dev

@@ -1,0 +1,11 @@
+# `make share`: the laptop's stack behind a temporary public URL (a Cloudflare quick tunnel to
+# the dashboard on localhost:3000). The same read-only dashboard and analyst limits as the
+# public VM (docker-compose.public.yml), without Caddy: the tunnel terminates HTTPS. The limits
+# come from deploy/share.env; `make demo` puts the local settings back.
+services:
+  dashboard:
+    build:
+      args:
+        VITE_READ_ONLY: "true"
+    environment:
+      PUBLIC_MODE: "true"
