@@ -6,6 +6,9 @@
 investigation takes tens of seconds and the case service must not block its Kafka consumer
 waiting for it. The agent is never on the decisioning path, and it is not on the
 case-creation path either.
+
+`/cases/{id}/ask` answers one analyst question about a case, synchronously, with the same
+citation check as the reports (agent/ask.py). The dashboard reaches it as `/agent/...`.
 """
 from __future__ import annotations
 
@@ -16,15 +19,17 @@ import time
 from typing import Any
 
 import uvicorn
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
-from pydantic import BaseModel
-from starlette.responses import PlainTextResponse
+from pydantic import BaseModel, Field
+from starlette.responses import JSONResponse, PlainTextResponse
 
+from .ask import MAX_HISTORY_TURNS, MAX_QUESTION_CHARS, AnswerCache, CaseNotFound, CaseUnavailable, ask_case
 from .graph import build_graph
 from .indexer import index_closed_cases
 from .llm import build_llm, check_model
 from .memory import build_memory
+from .ratelimit import RateLimiter
 from .settings import Settings
 from .tools import Tools
 
@@ -36,10 +41,34 @@ DURATION = Histogram("agent_investigation_seconds", "Wall time per investigation
 TOOL_CALLS = Histogram("agent_tool_calls", "Tool calls used per investigation",
                        buckets=(0, 1, 2, 3, 4, 5, 6, 7, 8))
 VERIFY_FAILURES = Counter("agent_verify_failures_total", "Reports that failed the citation check")
+ASKS = Counter("agent_asks_total", "Questions asked about a case", ["outcome"])
+ASK_DURATION = Histogram("agent_ask_seconds", "Wall time per answered question",
+                         buckets=(0.5, 1, 2, 4, 8, 16, 32))
+ASK_REMOVED = Counter("agent_ask_claims_removed_total", "Answer sentences the citation check removed")
 
 
 class InvestigateRequest(BaseModel):
     caseId: str
+
+
+class ChatTurn(BaseModel):
+    role: str
+    content: str = Field(max_length=4000)
+
+
+class AskRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
+    history: list[ChatTurn] = Field(default_factory=list)
+
+
+def client_key(request: Request) -> str:
+    """Who is asking, for the per-client limit. Behind Cloudflare the edge sets
+    CF-Connecting-IP and overwrites any value a client sends; behind the dashboard's nginx,
+    X-Real-IP. Both are spoofable if this port is exposed directly, which is why the global
+    limit, not this one, is what protects the quota."""
+    return (request.headers.get("cf-connecting-ip")
+            or request.headers.get("x-real-ip")
+            or (request.client.host if request.client else "?"))
 
 
 # Investigations share a per-minute token budget with each other, so running two at once
@@ -85,6 +114,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings()
     app = FastAPI(title="fraudgraph-analyst-agent", version="0.1.0")
     state: dict[str, Any] = {}
+    cache = AnswerCache(settings.ask_cache_ttl_s)
+    limiter = RateLimiter(settings.ask_rate_ip_per_min, settings.ask_rate_ip_per_day,
+                          settings.ask_rate_global_per_min, settings.ask_rate_global_per_day)
 
     async def _refresh_index_forever() -> None:
         while True:
@@ -111,7 +143,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         state["memory"] = NullMemory()
         threading.Thread(target=_init_memory, name="memory-init", daemon=True).start()
         try:
-            state["graph"] = build_graph(settings, tools, build_llm(settings))
+            state["llm"] = build_llm(settings)
+            state["graph"] = build_graph(settings, tools, state["llm"])
             state["error"] = check_model(settings)      # usable client, unusable model id
             if state["error"]:
                 log.error("%s", state["error"])
@@ -119,6 +152,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                      settings.provider, settings.model, settings.max_tool_calls)
         except Exception as e:  # noqa: BLE001 - serve /health so the operator can see why
             state["graph"] = None
+            state["llm"] = None
             state["error"] = str(e)
             log.error("agent cannot serve investigations: %s", e)
         state["indexer"] = asyncio.get_event_loop().create_task(_refresh_index_forever())
@@ -140,8 +174,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "maxToolCalls": settings.max_tool_calls,
             "maxConcurrent": settings.max_concurrent,
             "similarCasesIndexed": state["memory"].count() if state.get("memory") else 0,
+            "ask": {"rateLimited": limiter.enabled, "cacheTtlSeconds": settings.ask_cache_ttl_s},
             "error": state.get("error"),
         }
+
+    @app.post("/cases/{case_id}/ask")
+    def ask(case_id: str, req: AskRequest, request: Request):
+        if not state.get("llm") or state.get("error"):
+            ASKS.labels(outcome="no_model").inc()
+            raise HTTPException(status_code=503, detail=state.get("error") or "no model configured")
+        history = [t.model_dump() for t in req.history][-MAX_HISTORY_TURNS:]
+        key = AnswerCache.key(case_id, req.question, history)
+        cached = cache.get(key)
+        if cached is not None:
+            ASKS.labels(outcome="cached").inc()
+            return {**cached, "cached": True}
+        wait = limiter.check(client_key(request))
+        if wait:
+            ASKS.labels(outcome="rate_limited").inc()
+            return JSONResponse(status_code=429, headers={"Retry-After": str(wait)},
+                                content={"detail": "rate limited to protect a free API quota",
+                                         "retryAfterSeconds": wait})
+        started = time.perf_counter()
+        try:
+            answer = ask_case(case_id, req.question, history, settings, state["tools"], state["llm"])
+        except CaseNotFound:
+            ASKS.labels(outcome="not_found").inc()
+            raise HTTPException(status_code=404, detail="no such case") from None
+        except CaseUnavailable as e:
+            ASKS.labels(outcome="error").inc()
+            raise HTTPException(status_code=503, detail=f"the case service is unavailable: {e}") from None
+        ASK_DURATION.observe(time.perf_counter() - started)
+        ASK_REMOVED.inc(len(answer["removed"]))
+        ASKS.labels(outcome="answered" if answer["answer"] else "unsupported").inc()
+        cache.put(key, answer)
+        return answer
 
     @app.post("/investigate", status_code=202)
     def investigate(req: InvestigateRequest, background: BackgroundTasks) -> dict:

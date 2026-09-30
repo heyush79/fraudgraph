@@ -74,6 +74,9 @@ class FakeTools:
         self.attached = report
         return True
 
+    def close(self):
+        pass
+
 
 # A turn with no tool calls and no JSON. Investigate treats it as "done gathering"; it is
 # never a valid draft.

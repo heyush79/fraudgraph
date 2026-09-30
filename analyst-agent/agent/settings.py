@@ -45,6 +45,21 @@ class Settings:
     chroma_collection: str = os.environ.get("FRAUDGRAPH_CHROMA_COLLECTION", "fraudgraph-reports")
 
     server_port: int = int(os.environ.get("FRAUDGRAPH_AGENT_PORT", "8000"))
+
     # How often closed cases are pulled into the similar-case index. Cases close on human
     # timescales, so minutes is the right cadence.
     index_refresh_secs: float = float(os.environ.get("FRAUDGRAPH_INDEX_REFRESH_SECS", "120"))
+
+    # --- ask the analyst (chat) ------------------------------------------------------
+    # Tools one question may fetch beyond the evidence the case already has. Two, because
+    # each one makes the second model call larger, and one question rarely needs more.
+    ask_max_tools: int = int(os.environ.get("FRAUDGRAPH_ASK_MAX_TOOLS", "2"))
+    # A verified answer to the same question about the same case is reused for an hour: the
+    # suggested questions get asked repeatedly in a demo, and the evidence behind a decided
+    # transaction does not change. 0 disables the cache.
+    ask_cache_ttl_s: int = int(os.environ.get("FRAUDGRAPH_ASK_CACHE_TTL", "3600"))
+    # 0 = unlimited. The public deployment sets these; see agent/ratelimit.py for why.
+    ask_rate_ip_per_min: int = int(os.environ.get("FRAUDGRAPH_ASK_RATE_IP_MIN", "0"))
+    ask_rate_ip_per_day: int = int(os.environ.get("FRAUDGRAPH_ASK_RATE_IP_DAY", "0"))
+    ask_rate_global_per_min: int = int(os.environ.get("FRAUDGRAPH_ASK_RATE_GLOBAL_MIN", "0"))
+    ask_rate_global_per_day: int = int(os.environ.get("FRAUDGRAPH_ASK_RATE_GLOBAL_DAY", "0"))

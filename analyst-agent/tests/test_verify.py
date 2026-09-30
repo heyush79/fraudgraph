@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from agent.models import Evidence, FraudType, RecommendedAction, Report
-from agent.verify import extract_numbers, flatten_numbers, verify, violations_prompt
+from agent.models import Evidence, Finding, FraudType, RecommendedAction, Report
+from agent.verify import extract_numbers, flatten_numbers, verify, verify_claims, violations_prompt
 
 VELOCITY_EVIDENCE = Evidence(
     tool="get_window_counts", args={"user_id": "u_10903"},
@@ -159,3 +159,120 @@ def test_the_retry_prompt_names_each_problem():
 def test_negative_refs_are_rejected_by_the_schema():
     with pytest.raises(ValueError, match="non-negative"):
         report("x", [-1])
+
+
+
+# -- percentages and claim-level checking (the chat answers use both) ----------
+
+def test_a_percentage_can_cite_a_ratio():
+    ev = [Evidence(tool="t", payload={"ratio": 0.961, "chainDepth": 2})]
+    assert verify(report("It forwarded 96% of what it received.", [0]), ev) == []
+    assert verify(report("It forwarded 96.1% of what it received.", [0]), ev) == []
+
+
+def test_a_percentage_that_matches_nothing_is_still_caught():
+    ev = [Evidence(tool="t", payload={"ratio": 0.961})]
+    v = verify(report("It forwarded 50% of what it received.", [0]), ev)
+    assert [x.kind for x in v] == ["uncited_number"]
+    assert "50%" in v[0].detail
+
+
+def test_a_bare_number_does_not_get_the_percent_allowance():
+    """96 with no % sign must not be excused by a ratio of 0.96."""
+    ev = [Evidence(tool="t", payload={"ratio": 0.96})]
+    assert [x.kind for x in verify(report("There were 96 transfers.", [0]), ev)] == ["uncited_number"]
+
+
+def test_verify_claims_checks_sentences_one_by_one():
+    from agent.models import Finding
+    from agent.verify import verify_claims
+    claims = [Finding(claim="18 transactions in 60 seconds.", evidence_refs=[0]),
+              Finding(claim="The account made 23 purchases.", evidence_refs=[0])]
+    v = verify_claims(claims, [SIGNAL_EVIDENCE])
+    assert [x.finding_index for x in v] == [1]
+
+
+def test_a_small_decimal_is_checked_because_scores_live_there():
+    """A score of 0.9997 is below the small-number exemption, and a claim that it was 0.42
+    must not slip through on that technicality."""
+    ev = [Evidence(tool="decision", payload={"mlScore": 0.9997, "signals": [{"severity": 0.25}]})]
+    wrong = verify_claims([Finding(claim="The model scored it 0.42.", evidence_refs=[0])], ev)
+    assert [v.kind for v in wrong] == ["uncited_number"]
+    right = [Finding(claim="The model scored it 0.9997, and the signal's severity was 0.25.", evidence_refs=[0])]
+    assert verify_claims(right, ev) == []
+
+
+def test_a_rounded_score_is_still_supported():
+    ev = [Evidence(tool="decision", payload={"mlScore": 0.9997944})]
+    assert verify_claims([Finding(claim="It scored 0.9998.", evidence_refs=[0])], ev) == []
+
+
+def test_small_whole_numbers_stay_exempt():
+    ev = [Evidence(tool="t", payload={"count": 18})]
+    assert verify_claims([Finding(claim="Two signals fired, 18 payments, 1 account.", evidence_refs=[0])], ev) == []
+    assert verify_claims([Finding(claim="Two signals, 18 payments, 2.0 accounts.", evidence_refs=[0])], ev) == []
+
+
+def test_digits_inside_a_uuid_support_nothing():
+    ev = [Evidence(tool="decision", payload={"txnId": "1af96d0e-5b18-4c3e-9f91-e70712a598da", "count": 9})]
+    assert [v.kind for v in verify_claims([Finding(claim="It happened 18 times.", evidence_refs=[0])], ev)] \
+        == ["uncited_number"]
+    # and quoting the id itself is not a quantity either
+    assert verify_claims([Finding(claim="Transaction 1af96d0e-5b18-4c3e-9f91-e70712a598da, 9 payments.",
+                                  evidence_refs=[0])], ev) == []
+
+
+def test_the_number_of_keys_in_an_object_is_not_evidence():
+    ev = [Evidence(tool="decision", payload={f"k{i}": "x" for i in range(12)})]
+    assert [v.kind for v in verify_claims([Finding(claim="Flagged 12 times.", evidence_refs=[0])], ev)] \
+        == ["uncited_number"]
+
+
+
+@pytest.mark.parametrize("claim", ["amtZ = -0.38", "amtZ = \u22120.38", "amtZ = \u20110.38", "0.38 below its average"])
+def test_a_negative_value_can_be_quoted_with_any_minus_sign_or_in_words(claim):
+    ev = [Evidence(tool="decision", payload={"features": {"amtZ": -0.38}})]
+    assert verify_claims([Finding(claim=claim, evidence_refs=[0])], ev) == []
+
+
+def test_a_wrong_magnitude_is_still_caught_whatever_the_sign():
+    ev = [Evidence(tool="decision", payload={"features": {"amtZ": -0.38}})]
+    assert [v.kind for v in verify_claims([Finding(claim="amtZ = \u22120.39", evidence_refs=[0])], ev)] \
+        == ["uncited_number"]
+
+
+def test_a_derived_rate_is_caught():
+    """Seen live: 81 transactions over 24 hours became "about 3-4 an hour"."""
+    ev = [Evidence(tool="get_user_history", payload={"recentTruncatedFrom": 81, "hours": 24})]
+    claim = "It normally makes about 3\u20114 transactions per hour (81 over 24 h)."
+    violations = verify_claims([Finding(claim=claim, evidence_refs=[0])], ev)
+    assert {v.kind for v in violations} == {"uncited_number"}
+    assert any("quotes 4," in v.detail for v in violations)
+    assert not any("quotes 81" in v.detail or "quotes 24" in v.detail for v in violations)
+
+
+
+@pytest.mark.parametrize("claim", ["a component of 13\u202f805 accounts", "a component of 13\u00a0805 accounts",
+                                   "a component of 13,805 accounts", "a component of 13805 accounts"])
+def test_thousands_separators_written_as_spaces_are_one_number(claim):
+    """Seen live: "13 805" with a narrow no-break space was read as 13 and 805."""
+    ev = [Evidence(tool="decision", payload={"componentSize": 13805})]
+    assert verify_claims([Finding(claim=claim, evidence_refs=[0])], ev) == []
+
+
+def test_a_space_before_digits_that_are_not_a_group_still_separates_numbers():
+    ev = [Evidence(tool="t", payload={"a": 18, "b": 60})]
+    assert extract_numbers("18\u00a060 seconds") == [18.0, 60.0]       # two digits after: not a separator
+    assert extract_numbers("5\u202f1234") == [5.0, 1234.0]            # four digits after: not a separator
+    assert verify_claims([Finding(claim="18\u00a060 seconds", evidence_refs=[0])], ev) == []
+
+
+
+def test_citation_markers_written_into_the_prose_are_not_quantities():
+    """Seen live: "... closed as fraud (evidence [3])" failed because [3] was read as the number 3."""
+    ev = [Evidence(tool="t", payload={"count": 18})] * 4
+    assert extract_numbers("closed as fraud (evidence [3]), see also [0, 2]") == []
+    assert verify_claims([Finding(claim="18 payments, as shown in [3].", evidence_refs=[3])], ev) == []
+    # a bracketed number that is part of the claim's wording, not a marker, is still checked
+    assert [v.kind for v in verify_claims([Finding(claim="It happened 57 times [3].", evidence_refs=[3])], ev)] \
+        == ["uncited_number"]
