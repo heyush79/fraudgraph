@@ -11,11 +11,13 @@ from scorer.gen import scoring_pb2
 DECISION_FEATURES = {
     "cnt1m": 4, "cnt5m": 22, "cnt1h": 71, "sum1h": 24291.6, "amtZ": 3.8, "geoSpeedKmh": 79.4,
     "secsSinceLast": 126.7, "merchantRiskTier": 1, "nodeDegree": 2, "inCycle": True, "componentSize": 10, "channel": "P2P",
+    "passThroughRatio": 0.961, "secsSinceInbound": 184.0, "chainDepth": 2,
 }
 # what the same engine sends to the scorer over gRPC for that transaction
 PROTO_VECTOR = scoring_pb2.FeatureVector(
     txn_id="a5e82a27", cnt_1m=4, cnt_5m=22, cnt_1h=71, sum_1h=24291.6, amt_z=3.8, geo_speed_kmh=79.4,
     secs_since_last=126.7, merchant_risk_tier=1, node_degree=2, in_cycle=True, component_size=10, channel=2,
+    pass_through_ratio=0.961, secs_since_inbound=184.0, chain_depth=2,
 )
 
 
@@ -31,7 +33,7 @@ def test_feature_list_is_the_proto_minus_txn_id():
     proto_fields = [f.name for f in scoring_pb2.FeatureVector.DESCRIPTOR.fields]
     assert proto_fields[0] == "txn_id"
     assert list(FEATURES) == proto_fields[1:]
-    assert len(FEATURES) == 12
+    assert len(FEATURES) == 15
 
 
 def test_decision_keys_cover_every_feature_and_match_engine_naming():
@@ -39,13 +41,16 @@ def test_decision_keys_cover_every_feature_and_match_engine_naming():
     assert DECISION_KEYS["cnt_1m"] == "cnt1m"
     assert DECISION_KEYS["geo_speed_kmh"] == "geoSpeedKmh"
     assert DECISION_KEYS["merchant_risk_tier"] == "merchantRiskTier"
+    assert DECISION_KEYS["pass_through_ratio"] == "passThroughRatio"
+    assert DECISION_KEYS["chain_depth"] == "chainDepth"
     assert set(DECISION_KEYS.values()) == set(DECISION_FEATURES)
 
 
 def test_channel_encoding_matches_proto_comment():
     assert CHANNELS == {"CARD": 0, "UPI": 1, "P2P": 2}
+    at = FEATURES.index("channel")        # by name: adding a field must not move what we check
     for name, code in CHANNELS.items():
-        assert row_from_decision_features({**DECISION_FEATURES, "channel": name})[-1] == code
+        assert row_from_decision_features({**DECISION_FEATURES, "channel": name})[at] == code
 
 
 def test_missing_feature_fails_loudly():

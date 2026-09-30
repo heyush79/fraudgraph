@@ -11,7 +11,7 @@ from scorer.settings import Settings
 
 
 def _vector(row, txn="t-1") -> scoring_pb2.FeatureVector:
-    kwargs = {name: (bool(v) if name == "in_cycle" else (int(v) if name in ("cnt_1m", "cnt_5m", "cnt_1h", "merchant_risk_tier", "node_degree", "component_size", "channel") else float(v)))
+    kwargs = {name: (bool(v) if name == "in_cycle" else (int(v) if name in ("cnt_1m", "cnt_5m", "cnt_1h", "merchant_risk_tier", "node_degree", "component_size", "channel", "chain_depth") else float(v)))
               for name, v in zip(FEATURES, row)}
     return scoring_pb2.FeatureVector(txn_id=txn, **kwargs)
 
@@ -44,6 +44,7 @@ def test_admin_endpoints(registry):
     holder = ModelHolder(registry)
     client = TestClient(create_app(holder))
     assert client.get("/health").json() == {"status": "NO_MODEL", "modelVersion": None, "available": ["v1"]}
+    assert "incompatible" not in client.get("/health").json()      # only shown when something was skipped
     assert client.get("/model").status_code == 404
     assert client.post("/reload").json()["loaded"] == "v1"
     assert client.get("/health").json()["status"] == "UP"

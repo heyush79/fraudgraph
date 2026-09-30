@@ -19,6 +19,10 @@ def create_app(holder: ModelHolder) -> FastAPI:
             "status": "UP" if bundle else "NO_MODEL",
             "modelVersion": bundle.version if bundle else None,
             "available": holder.registry.versions(),
+            # served features this model was not trained on, e.g. right after a proto change
+            **({"unusedFeatures": bundle.unused} if bundle and bundle.unused else {}),
+            # present only when something was skipped, so an operator sees WHY there is no model
+            **({"incompatible": holder.incompatible} if holder.incompatible else {}),
         }
 
     @app.get("/model")
@@ -34,6 +38,9 @@ def create_app(holder: ModelHolder) -> FastAPI:
             bundle = holder.load(version)
         except FileNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
+        except ValueError as e:
+            # needs a feature this build does not produce; serving it would mean inventing a column
+            raise HTTPException(status_code=409, detail=str(e)) from e
         metrics.MODEL_VERSION.set(int(bundle.version[1:]))
         return {"loaded": bundle.version, "trainedAt": bundle.meta.get("trained_at")}
 

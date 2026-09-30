@@ -98,5 +98,48 @@ def test_sweep_and_suggestions_on_a_toy_set():
 
 def _feat(**over):
     base = {"cnt1m": 1, "cnt5m": 1, "cnt1h": 1, "sum1h": 10.0, "amtZ": 0.0, "geoSpeedKmh": 0.0, "secsSinceLast": -1.0,
-            "merchantRiskTier": 0, "nodeDegree": 0, "inCycle": False, "componentSize": 1, "channel": "CARD"}
+            "merchantRiskTier": 0, "nodeDegree": 0, "inCycle": False, "componentSize": 1, "channel": "CARD",
+            "passThroughRatio": 0.0, "secsSinceInbound": -1.0, "chainDepth": 0}
     return {**base, **over}
+
+
+def test_rows_logged_before_a_feature_existed_are_skipped_and_counted():
+    old = {k: v for k, v in _feat().items() if k not in ("passThroughRatio", "secsSinceInbound", "chainDepth")}
+    decisions = [
+        {"txnId": "pre1", "ts_ms": 1_000, "features": old},
+        {"txnId": "pre2", "ts_ms": 2_000, "features": old},
+        {"txnId": "new1", "ts_ms": 3_000, "features": _feat(chainDepth=2)},
+    ]
+    frame = build_frame(decisions, {"new1": "RING"})
+    assert frame["txn_id"].tolist() == ["new1"]
+    assert frame.attrs["staleRowsSkipped"] == 2
+
+
+def test_a_window_entirely_before_the_upgrade_says_so():
+    old = {k: v for k, v in _feat().items() if k != "chainDepth"}
+    with pytest.raises(ValueError, match="predate the current feature list"):
+        build_frame([{"txnId": "x", "ts_ms": 1, "features": old}], {})
+
+
+
+def test_the_kafka_loader_also_skips_rows_from_before_the_upgrade(monkeypatch):
+    """make train uses the streaming loader, not build_frame, so it needs the same guard."""
+    import json as _json
+    import training.train as train
+    from training.kafka_source import Message
+
+    old = {k: v for k, v in _feat().items() if k not in ("passThroughRatio", "secsSinceInbound", "chainDepth")}
+    decisions = [
+        Message("u1", _json.dumps({"txnId": "pre", "features": old}).encode(), 1_000),
+        Message("u2", _json.dumps({"txnId": "new", "features": _feat(chainDepth=1)}).encode(), 2_000),
+    ]
+    labels = [Message("new", _json.dumps({"txnId": "new", "isFraud": True, "pattern": "RING"}).encode(), 2_000)]
+
+    def fake_read(bootstrap, topic, since=None, max_rows=None):
+        return iter(decisions if topic == train.DECISIONS_TOPIC else labels)
+
+    monkeypatch.setattr(train, "read_topic", fake_read)
+    frame, n_labels = train.load_from_kafka("x:1", 1.0, None)
+    assert frame["txn_id"].tolist() == ["new"]
+    assert frame.attrs["staleRowsSkipped"] == 1
+    assert frame["y"].tolist() == [1]

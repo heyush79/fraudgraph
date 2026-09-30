@@ -27,6 +27,7 @@ def synthetic_frame(n: int = 8000, seed: int = 0) -> pd.DataFrame:
         "secs_since_last": rng.uniform(60, 3600, n), "merchant_risk_tier": rng.integers(0, 2, n),
         "node_degree": rng.integers(0, 3, n), "in_cycle": np.zeros(n), "component_size": rng.integers(1, 4, n),
         "channel": rng.integers(0, 2, n),
+        "pass_through_ratio": np.zeros(n), "secs_since_inbound": -np.ones(n), "chain_depth": np.zeros(n),
     })
     pattern = np.array([None] * n, dtype=object)
     idx = rng.choice(n, size=int(n * 0.05), replace=False)
@@ -35,6 +36,9 @@ def synthetic_frame(n: int = 8000, seed: int = 0) -> pd.DataFrame:
     X.loc[idx[third:2 * third], "geo_speed_kmh"] = rng.uniform(1500, 30000, third); pattern[idx[third:2 * third]] = "GEO"
     rest = idx[2 * third:]
     X.loc[rest, "in_cycle"] = 1; X.loc[rest, "channel"] = 2; X.loc[rest, "component_size"] = 5; pattern[rest] = "RING"
+    X.loc[rest, "pass_through_ratio"] = rng.uniform(0.90, 0.98, len(rest))
+    X.loc[rest, "secs_since_inbound"] = rng.uniform(60, 450, len(rest))
+    X.loc[rest, "chain_depth"] = rng.integers(1, 6, len(rest))
     frame = X[list(FEATURES)].astype(float)
     frame.insert(0, "txn_id", [f"t{i}" for i in range(n)])
     frame.insert(1, "ts", pd.date_range("2026-09-01", periods=n, freq="20s", tz="UTC"))

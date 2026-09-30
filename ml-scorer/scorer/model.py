@@ -20,10 +20,14 @@ import threading
 from dataclasses import dataclass
 from typing import Any
 
+import logging
+
 import numpy as np
 import xgboost as xgb
 
 from .features import FEATURES
+
+log = logging.getLogger(__name__)
 
 _VERSION_RE = re.compile(r"^v(\d+)$")
 
@@ -36,14 +40,27 @@ class Prediction:
 
 
 class ModelBundle:
+    """A model is served by name, not by position. It scores the columns it was trained on,
+    picked out of the vector this build produces, so adding a feature to scoring.proto does
+    not strand every existing model: the old one keeps serving on the features it knows
+    while a new one trains. Only a model that needs a feature this build does NOT produce
+    (a rollback) is refused, because scoring it would mean inventing a column."""
+
     def __init__(self, booster: xgb.Booster, meta: dict[str, Any]) -> None:
-        if list(meta.get("features", [])) != list(FEATURES):
+        trained = list(meta.get("features") or [])
+        missing = [f for f in trained if f not in FEATURES]
+        if not trained or missing or len(set(trained)) != len(trained):
             raise ValueError(
-                f"model {meta.get('version')} was trained on {meta.get('features')} but serving expects {list(FEATURES)}"
+                f"model {meta.get('version')} needs features this build does not produce: "
+                f"{missing or trained}; serving produces {list(FEATURES)}"
             )
         self.booster = booster
         self.meta = meta
         self.version: str = meta["version"]
+        self.features: list[str] = trained
+        self._columns = np.array([FEATURES.index(f) for f in trained], dtype=np.intp)
+        # served but not scored by this model; reported by /health so the gap is visible
+        self.unused: list[str] = [f for f in FEATURES if f not in trained]
 
     @classmethod
     def load(cls, version_dir: pathlib.Path) -> "ModelBundle":
@@ -53,13 +70,14 @@ class ModelBundle:
         return cls(booster, meta)
 
     def predict(self, row: np.ndarray, explain_min_probability: float = 0.0, top_k: int = 5) -> Prediction:
-        dm = xgb.DMatrix(row.reshape(1, -1), feature_names=list(FEATURES))
+        """`row` is the full served vector, in FEATURES order."""
+        dm = xgb.DMatrix(row[self._columns].reshape(1, -1), feature_names=self.features)
         probability = float(self.booster.predict(dm)[0])
         contributions: list[tuple[str, float]] = []
         if probability >= explain_min_probability:
             contribs = self.booster.predict(dm, pred_contribs=True)[0][:-1]  # last column is the bias term
             order = np.argsort(-np.abs(contribs))[:top_k]
-            contributions = [(FEATURES[i], float(contribs[i])) for i in order]
+            contributions = [(self.features[i], float(contribs[i])) for i in order]
         return Prediction(probability, contributions, self.version)
 
 
@@ -102,6 +120,8 @@ class ModelHolder:
         self.registry = registry
         self._lock = threading.Lock()
         self.current: ModelBundle | None = None
+        # version -> why it cannot be served by this build (a feature-list mismatch)
+        self.incompatible: dict[str, str] = {}
 
     def load(self, version: str | None = None) -> ModelBundle:
         version = version or self.registry.latest()
@@ -115,7 +135,21 @@ class ModelHolder:
         return bundle
 
     def try_load_latest(self) -> ModelBundle | None:
-        try:
-            return self.load()
-        except FileNotFoundError:
-            return None
+        """The newest version this build can serve, or None.
+
+        A model trained before a feature was added to scoring.proto is still servable (see
+        ModelBundle). One that needs a feature this build does not produce is not, and refusing
+        to start over it would take the scorer down for as long as a retrain takes; skipping it
+        lets the engine run DEGRADED behind its breaker until a servable version lands, which is
+        the failure mode the whole design is built around.
+        """
+        self.incompatible = {}
+        for version in reversed(self.registry.versions()):
+            try:
+                return self.load(version)
+            except ValueError as e:
+                self.incompatible[version] = str(e)
+                log.warning("skipping model %s: %s", version, e)
+            except FileNotFoundError:
+                continue
+        return None

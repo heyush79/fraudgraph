@@ -39,12 +39,34 @@ LABELS_TOPIC = "transactions.labels"
 
 # ---- data ---------------------------------------------------------------------
 
+def usable(decisions: list[dict]) -> tuple[list[dict], int]:
+    """Drop decisions logged before a feature existed, and say how many.
+
+    Adding a field to scoring.proto means every decision already on the topic lacks it. Serving
+    stays strict about that (a missing feature is a bug there); training over a window that spans
+    the upgrade instead keeps only the rows logged by the new engine, and records the count in
+    the model's metadata so the cut is never silent.
+    """
+    from scorer.features import DECISION_KEYS
+    needed = set(DECISION_KEYS.values())
+    kept = [d for d in decisions if needed <= set(d.get("features") or {})]
+    return kept, len(decisions) - len(kept)
+
+
 def build_frame(decisions: list[dict], labels: dict[str, str]) -> pd.DataFrame:
     """decisions: [{txnId, ts_ms, features}], labels: txnId -> pattern. Unlabelled = legit."""
     if not decisions:
         raise ValueError("no decisions to train on")
+    decisions, stale = usable(decisions)
+    if not decisions:
+        raise ValueError(f"all {stale} decisions predate the current feature list; "
+                         f"let the upgraded engine run and train on a window after the upgrade")
+    if stale:
+        log.info("skipped %d decisions logged before the current feature list existed", stale)
     X = matrix_from_decision_features([d["features"] for d in decisions])
-    return _assemble([d["txnId"] for d in decisions], [d["ts_ms"] for d in decisions], X, labels)
+    frame = _assemble([d["txnId"] for d in decisions], [d["ts_ms"] for d in decisions], X, labels)
+    frame.attrs["staleRowsSkipped"] = stale      # set after assembly: sorting can drop attrs
+    return frame
 
 
 def _assemble(txn_ids: list[str], ts_ms: list[int], X: np.ndarray, labels: dict[str, str]) -> pd.DataFrame:
@@ -68,7 +90,8 @@ def time_split(frame: pd.DataFrame, test_fraction: float = 0.2) -> tuple[pd.Data
     return frame.iloc[:cut], frame.iloc[cut:]
 
 
-def fit(train: pd.DataFrame, n_estimators: int = 200, max_depth: int = 6, seed: int = 42) -> xgb.XGBClassifier:
+def fit(train: pd.DataFrame, n_estimators: int = 200, max_depth: int = 6, seed: int = 42,
+        features: tuple[str, ...] = FEATURES) -> xgb.XGBClassifier:
     y = train["y"].to_numpy()
     pos, neg = int(y.sum()), int(len(y) - y.sum())
     if pos == 0 or neg == 0:
@@ -85,7 +108,7 @@ def fit(train: pd.DataFrame, n_estimators: int = 200, max_depth: int = 6, seed: 
         n_jobs=4,
         random_state=seed,
     )
-    clf.fit(train[list(FEATURES)], y)
+    clf.fit(train[list(features)], y)
     return clf
 
 
@@ -94,17 +117,26 @@ def fit(train: pd.DataFrame, n_estimators: int = 200, max_depth: int = 6, seed: 
 def load_from_kafka(bootstrap: str, hours: float, max_rows: int | None) -> tuple[pd.DataFrame, int]:
     """Streams fraud.decisions into compact rows (a million decisions as parsed dicts would be
     ~2 GB; as float tuples it is a few hundred MB), then joins the labels."""
+    from scorer.features import DECISION_KEYS
+    needed = set(DECISION_KEYS.values())
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
     txn_ids: list[str] = []
     ts_ms: list[int] = []
     rows: list[tuple[float, ...]] = []
+    stale = 0
     for n, msg in enumerate(read_topic(bootstrap, DECISIONS_TOPIC, since=since, max_rows=max_rows), 1):
         d = json.loads(msg.value)
+        features = d.get("features") or {}
+        if not needed <= features.keys():
+            stale += 1                 # logged before the current feature list existed; see usable()
+            continue
         txn_ids.append(d["txnId"])
         ts_ms.append(msg.ts_ms)
-        rows.append(tuple(row_from_decision_features(d["features"])))
+        rows.append(tuple(row_from_decision_features(features)))
         if n % 250_000 == 0:
             log.info("  %d decisions read", n)
+    if stale:
+        log.info("skipped %d decisions logged before the current feature list existed", stale)
     labels: dict[str, str] = {}
     # labels are keyed by txnId and stamped with the txn time; read a little earlier than the
     # decisions window so a label is never missed for a decision at its edge
@@ -113,10 +145,15 @@ def load_from_kafka(bootstrap: str, hours: float, max_rows: int | None) -> tuple
         if lbl.get("isFraud"):
             labels[lbl["txnId"]] = lbl.get("pattern", "UNKNOWN")
     if not rows:
+        if stale:
+            raise ValueError(f"all {stale} decisions in the window predate the current feature list; "
+                             f"let the upgraded engine run and train on a window after the upgrade")
         raise ValueError("no decisions in the window; is the demo running?")
     X = np.array(rows, dtype=np.float64)
     del rows
-    return _assemble(txn_ids, ts_ms, X, labels), len(labels)
+    frame = _assemble(txn_ids, ts_ms, X, labels)
+    frame.attrs["staleRowsSkipped"] = stale
+    return frame, len(labels)
 
 
 def git_sha() -> str | None:
@@ -172,13 +209,19 @@ def check_trainable(frame: pd.DataFrame, test_fraction: float) -> None:
 
 def train_version(frame: pd.DataFrame, registry: Registry, version: str | None = None,
                   test_fraction: float = 0.2, n_estimators: int = 200, max_depth: int = 6,
-                  force: bool = False) -> tuple[str, dict]:
+                  force: bool = False, exclude: tuple[str, ...] = ()) -> tuple[str, dict]:
+    """`exclude` trains without some features, on the same rows and the same split: the
+    ablation that says what a feature is worth, rather than what new data is worth."""
+    unknown = [f for f in exclude if f not in FEATURES]
+    if unknown:
+        raise ValueError(f"cannot exclude unknown features {unknown}; have {list(FEATURES)}")
+    features = tuple(f for f in FEATURES if f not in exclude)
     if not force:
         check_trainable(frame, test_fraction)
     version = version or registry.next_version()
     train, test = time_split(frame, test_fraction)
-    clf = fit(train, n_estimators=n_estimators, max_depth=max_depth)
-    p_test = clf.predict_proba(test[list(FEATURES)])[:, 1]
+    clf = fit(train, n_estimators=n_estimators, max_depth=max_depth, features=features)
+    p_test = clf.predict_proba(test[list(features)])[:, 1]
     y_test = test["y"].to_numpy()
 
     table = evaluate.sweep(y_test, p_test)
@@ -193,8 +236,10 @@ def train_version(frame: pd.DataFrame, registry: Registry, version: str | None =
         "version": version,
         "trained_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "git_sha": git_sha(),
-        "features": list(FEATURES),
+        "features": list(features),
+        **({"excludedFeatures": list(exclude)} if exclude else {}),
         "rows": int(len(frame)),
+        "staleRowsSkipped": int(frame.attrs.get("staleRowsSkipped", 0)),
         "positives": int(frame["y"].sum()),
         "split": {
             "test_fraction": test_fraction,
@@ -239,6 +284,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--reload-url", default=os.environ.get("SCORER_RELOAD_URL", "http://localhost:8000/reload"))
     ap.add_argument("--no-reload", action="store_true")
     ap.add_argument("--force", action="store_true", help="register the version even if the window is too small to evaluate")
+    ap.add_argument("--exclude-features", default="",
+                    help="comma-separated features to leave out, for an ablation on the same data")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stderr)
 
@@ -247,8 +294,9 @@ def main(argv: list[str] | None = None) -> int:
     log.info("frame: %d rows, %d positives (%.2f%%), %s .. %s", len(frame), frame["y"].sum(),
              100 * frame["y"].mean(), frame["ts"].iloc[0], frame["ts"].iloc[-1])
 
+    exclude = tuple(f.strip() for f in args.exclude_features.split(",") if f.strip())
     version, meta = train_version(frame, Registry(pathlib.Path(args.registry)), args.version,
-                                  args.test_fraction, args.n_estimators, args.max_depth, args.force)
+                                  args.test_fraction, args.n_estimators, args.max_depth, args.force, exclude)
     metrics_table = json.loads((Registry(pathlib.Path(args.registry)).path(version) / "metrics.json").read_text())
     print(f"\nmodel {version}: pr_auc={meta['metrics']['pr_auc']} roc_auc={meta['metrics']['roc_auc']} "
           f"train={meta['split']['train_rows']} test={meta['split']['test_rows']} positives={meta['positives']}")
