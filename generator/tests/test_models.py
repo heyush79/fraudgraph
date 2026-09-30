@@ -24,3 +24,8 @@ def test_transaction_json_matches_lld_schema(t0):
 def test_label_json(t0):
     doc = json.loads(Label("x", "u_1", FraudPattern.VELOCITY, "ep_1", t0).to_json())
     assert doc == {"txnId": "x", "userId": "u_1", "isFraud": True, "pattern": "VELOCITY", "episodeId": "ep_1", "ts": "2026-09-04T10:15:03.120Z"}
+
+
+def test_a_ring_label_carries_its_hop_position(t0):
+    doc = json.loads(Label("x", "u_1", FraudPattern.RING, "ep_1", t0, hop=4, hops=5).to_json())
+    assert doc["hop"] == 4 and doc["hops"] == 5          # hop 4 of 5 closes the cycle

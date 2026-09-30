@@ -49,6 +49,8 @@ def test_ring_episode_closes_the_cycle(users, traffic, rng, t0):
         assert dsts == srcs[1:] + srcs[:1]  # A→B, B→C, …, last→A
         assert all(e.txn.channel is Channel.P2P for e in ep)
         assert all(e.label is not None and e.label.pattern is FraudPattern.RING for e in ep)
+        assert [e.label.hop for e in ep] == list(range(k))
+        assert all(e.label.hops == k for e in ep)
         assert [e.at for e in ep] == sorted(e.at for e in ep)
         minutes = (ep[-1].at - ep[0].at).total_seconds() / 60
         assert minutes <= 30

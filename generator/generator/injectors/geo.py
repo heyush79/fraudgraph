@@ -21,9 +21,16 @@ FAR_JITTER_DEG = 0.02
 class GeoInjector(Injector):
     pattern = FraudPattern.GEO
 
+    def __init__(self, users, traffic, rng, gap_minutes: tuple[float, float] = (MIN_GAP_MIN, MAX_GAP_MIN),
+                 far_txns: tuple[int, int] = (MIN_FAR_TXNS, MAX_FAR_TXNS)) -> None:
+        """Overridable for scenarios, where the far city should appear within a minute or two."""
+        super().__init__(users, traffic, rng)
+        self._gap_minutes = gap_minutes
+        self._far_txns = far_txns
+
     @property
     def mean_episode_size(self) -> float:
-        return (MIN_FAR_TXNS + MAX_FAR_TXNS) / 2  # labelled txns only
+        return (self._far_txns[0] + self._far_txns[1]) / 2  # labelled txns only
 
     def episode(self, start: datetime) -> list[ScheduledTxn]:
         user = self._rng.choice(self._users)
@@ -40,8 +47,8 @@ class GeoInjector(Injector):
 
         # a cloned card shows up as a different terminal/device far away
         cloned_device = f"d_{self._rng.getrandbits(32):08x}"
-        first_far = start + timedelta(minutes=self._rng.uniform(MIN_GAP_MIN, MAX_GAP_MIN))
-        n_far = self._rng.randint(MIN_FAR_TXNS, MAX_FAR_TXNS)
+        first_far = start + timedelta(minutes=self._rng.uniform(*self._gap_minutes))
+        n_far = self._rng.randint(*self._far_txns)
         at = first_far
         for _ in range(n_far):
             txn = Transaction(

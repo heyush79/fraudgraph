@@ -70,19 +70,30 @@ class Label:
     pattern: FraudPattern
     episode_id: str
     ts: datetime
+    # Position within a multi-step episode, when the injector knows it. For a ring, hop 0 is the
+    # origin and hop == hops-1 is the transfer that closes the cycle. Lets recall be measured by
+    # position exactly, instead of inferring completeness from timing.
+    hop: int | None = None
+    hops: int | None = None
+    # "scenario" for episodes a person triggered for a demo (generator.scenario), so recall
+    # measurements can leave out fraud that was planted to be watched rather than found.
+    source: str | None = None
 
     def to_json(self) -> str:
-        return json.dumps(
-            {
-                "txnId": self.txn_id,
-                "userId": self.user_id,
-                "isFraud": True,
-                "pattern": self.pattern.value,
-                "episodeId": self.episode_id,
-                "ts": iso_ts(self.ts),
-            },
-            separators=(",", ":"),
-        )
+        doc = {
+            "txnId": self.txn_id,
+            "userId": self.user_id,
+            "isFraud": True,
+            "pattern": self.pattern.value,
+            "episodeId": self.episode_id,
+            "ts": iso_ts(self.ts),
+        }
+        if self.hop is not None:
+            doc["hop"] = self.hop
+            doc["hops"] = self.hops
+        if self.source is not None:
+            doc["source"] = self.source
+        return json.dumps(doc, separators=(",", ":"))
 
 
 @dataclass(frozen=True, slots=True)

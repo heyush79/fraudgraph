@@ -26,14 +26,24 @@ MIN_MULTIPLIER, MAX_MULTIPLIER = 2.0, 6.0
 class RingInjector(Injector):
     pattern = FraudPattern.RING
 
+    def __init__(self, users, traffic, rng, accounts: tuple[int, int] = (MIN_ACCOUNTS, MAX_ACCOUNTS),
+                 minutes: tuple[float, float] = (MIN_MINUTES, MAX_MINUTES)) -> None:
+        """`accounts` and `minutes` are overridable for scenarios (generator.scenario), where one
+        ring has to close while someone is watching; the background generator uses the defaults."""
+        super().__init__(users, traffic, rng)
+        if accounts[0] < 3 or accounts[0] > accounts[1]:
+            raise ValueError("a ring needs at least 3 accounts, and min <= max")
+        self._accounts = accounts
+        self._minutes = minutes
+
     @property
     def mean_episode_size(self) -> float:
-        return (MIN_ACCOUNTS + MAX_ACCOUNTS) / 2
+        return (self._accounts[0] + self._accounts[1]) / 2
 
     def episode(self, start: datetime) -> list[ScheduledTxn]:
-        k = self._rng.randint(MIN_ACCOUNTS, MAX_ACCOUNTS)
+        k = self._rng.randint(*self._accounts)
         ring = self._rng.sample(self._users, k)
-        duration = self._rng.uniform(MIN_MINUTES, MAX_MINUTES) * 60.0
+        duration = self._rng.uniform(*self._minutes) * 60.0
         episode_id = f"ep_{uuid.uuid4().hex[:12]}"
 
         # k hops spread over the duration, order preserved, mild jitter
@@ -46,6 +56,7 @@ class RingInjector(Injector):
             dst = ring[(i + 1) % k]
             at = start + timedelta(seconds=off)
             txn = self._traffic.make_p2p(src, dst.user_id, round(amount, 2), at)
-            out.append(ScheduledTxn(at=at, txn=txn, label=Label(txn.txn_id, src.user_id, self.pattern, episode_id, at)))
+            out.append(ScheduledTxn(at=at, txn=txn, label=Label(txn.txn_id, src.user_id, self.pattern, episode_id, at,
+                                                               hop=i, hops=k)))
             amount *= self._rng.uniform(MIN_KEEP, MAX_KEEP)
         return out
