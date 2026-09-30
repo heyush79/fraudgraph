@@ -49,6 +49,12 @@ fraudgraph:
     edgeTtlHours: 24             # ring payments cycle within hours; older edges are noise for detection
     maxCycleDepth: 5             # rings of 3–5 accounts are the documented pattern; deeper = O(b^d) blowup
     minCycleLength: 3            # A→B→A is a repayment between friends, not a ring
+    # Pass-through: money that arrives and leaves again at nearly the same amount. It is what makes
+    # a laundering chain visible from its second hop; in_cycle only fires on the closing hop.
+    passThroughWindowMins: 60    # layering hops are minutes apart; an hour pairs them without pairing every inbound with every later outbound
+    passThroughMinRatio: 0.80    # a mule keeps a cut of a few percent; below 80% the money was split or spent, not forwarded
+    passThroughMaxRatio: 1.02    # a hair above 100% allows fees and rounding; much more means other money joined the transfer
+    passThroughMinDepth: 1       # signal from the first forwarded hop; raise to 2 if degraded-mode review volume is too noisy
 
   scoring:
     enabled: ${FRAUDGRAPH_SCORING_ENABLED:true}

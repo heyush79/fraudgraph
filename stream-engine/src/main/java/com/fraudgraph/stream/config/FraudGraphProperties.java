@@ -36,7 +36,13 @@ public record FraudGraphProperties(
 
     public record Geo(double maxSpeedKmh, double minDistanceKm, long minGapSecs) {}
 
-    public record Graph(int maxEdgesPerNode, int edgeTtlHours, int maxCycleDepth, int minCycleLength) {}
+    public record Graph(int maxEdgesPerNode, int edgeTtlHours, int maxCycleDepth, int minCycleLength,
+                        int passThroughWindowMins, double passThroughMinRatio, double passThroughMaxRatio,
+                        int passThroughMinDepth) {
+        // No convenience constructors on configuration records: with more than one, Spring
+        // cannot tell which to bind through and silently leaves the whole section null.
+        // ConfigBindingTest binds the shipped application.yml to catch exactly that.
+    }
 
     public record Scoring(boolean enabled, String host, int port, long timeoutMs, double sampleRate, Breaker breaker) {
         public record Breaker(int window, int minCalls, double failureRate, int waitOpenSecs, int halfOpenCalls) {}
@@ -55,7 +61,7 @@ public record FraudGraphProperties(
                 new Velocity(8, 20, 60, 30),
                 new Profile(10, 1.0),
                 new Geo(900, 100, 60),
-                new Graph(50, 24, 5, 3),
+                new Graph(50, 24, 5, 3, 60, 0.80, 1.02, 1),
                 new Scoring(false, "localhost", 50051, 150, 0.01, new Scoring.Breaker(50, 10, 0.5, 10, 5)),
                 new Thresholds(0.85, 0.60, 2, 0.5),
                 new Rules(200_000, List.of("m_CRYPTO_0013", "m_GAMBLING_0007")),

@@ -59,6 +59,9 @@ public final class GrpcScoringClient implements ScoringClient, AutoCloseable {
                 .setInCycle(fv.inCycle())
                 .setComponentSize(fv.componentSize())
                 .setChannel(fv.channel() == null ? 0 : fv.channel().ordinal())
+                .setPassThroughRatio(fv.passThroughRatio())
+                .setSecsSinceInbound(fv.secsSinceInbound())
+                .setChainDepth(fv.chainDepth())
                 .build();
     }
 

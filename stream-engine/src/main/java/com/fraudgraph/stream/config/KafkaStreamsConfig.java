@@ -41,7 +41,10 @@ public class KafkaStreamsConfig {
     @Bean
     public TransactionGraph transactionGraph(FraudGraphProperties props, MeterRegistry metrics) {
         var g = props.graph();
-        TransactionGraph graph = new TransactionGraph(g.maxEdgesPerNode(), java.time.Duration.ofHours(g.edgeTtlHours()).toMillis(), g.maxCycleDepth());
+        TransactionGraph graph = new TransactionGraph(g.maxEdgesPerNode(),
+                java.time.Duration.ofHours(g.edgeTtlHours()).toMillis(), g.maxCycleDepth(),
+                new TransactionGraph.PassThroughConfig(java.time.Duration.ofMinutes(g.passThroughWindowMins()).toMillis(),
+                        g.passThroughMinRatio(), g.passThroughMaxRatio()));
         metrics.gauge("fraudgraph_graph_nodes", graph, TransactionGraph::nodeCount);
         return graph;
     }

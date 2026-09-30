@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class ResilientScoringClientTest {
-    private static final FeatureVector FV = new FeatureVector("t", 1, 1, 1, 1, 0, 0, 1, 0, 0, false, 1, Channel.UPI);
+    private static final FeatureVector FV = new FeatureVector("t", 1, 1, 1, 1, 0, 0, 1, 0, 0, false, 1, Channel.UPI, 0.0, -1.0, 0);
 
     @Test
     void opensAfterFailuresFailsFastAndRecoversViaHalfOpen() throws Exception {

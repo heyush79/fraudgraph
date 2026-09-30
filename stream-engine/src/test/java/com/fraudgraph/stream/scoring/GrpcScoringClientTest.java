@@ -58,7 +58,7 @@ class GrpcScoringClientTest {
     }
 
     private static FeatureVector fv() {
-        return new FeatureVector("t-1", 9, 12, 30, 5000, 1.2, 0, 40, 2, 0, false, 1, Channel.CARD);
+        return new FeatureVector("t-1", 9, 12, 30, 5000, 1.2, 0, 40, 2, 0, false, 1, Channel.CARD, 0.0, -1.0, 0);
     }
 
     @Test

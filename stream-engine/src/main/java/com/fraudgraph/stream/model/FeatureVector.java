@@ -21,7 +21,10 @@ public record FeatureVector(
         int nodeDegree,
         boolean inCycle,
         int componentSize,
-        Channel channel
+        Channel channel,
+        double passThroughRatio,
+        double secsSinceInbound,
+        int chainDepth
 ) {
     /** Insertion-ordered so the JSON on fraud.decisions is stable and diffable. */
     public Map<String, Object> asMap() {
@@ -38,6 +41,9 @@ public record FeatureVector(
         m.put("inCycle", inCycle);
         m.put("componentSize", componentSize);
         m.put("channel", channel == null ? null : channel.name());
+        m.put("passThroughRatio", passThroughRatio);
+        m.put("secsSinceInbound", secsSinceInbound);
+        m.put("chainDepth", chainDepth);
         return m;
     }
 }

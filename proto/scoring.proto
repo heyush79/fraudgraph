@@ -29,6 +29,13 @@ message FeatureVector {
   bool in_cycle = 11;
   int32 component_size = 12;
   int32 channel = 13;             // CARD=0, UPI=1, P2P=2
+
+  // Pass-through: an outgoing P2P transfer that forwards money received shortly before, at a
+  // similar amount. Visible from the second hop of a laundering chain, long before a ring
+  // closes, which is when in_cycle finally fires. Zero / -1 / 0 when there was no recent inbound.
+  double pass_through_ratio = 14;   // this amount / the forwarded inbound amount
+  double secs_since_inbound = 15;   // -1 when nothing arrived within the window
+  int32 chain_depth = 16;           // consecutive pass-through hops before this one; 0 = origin
 }
 
 message ScoreResult {

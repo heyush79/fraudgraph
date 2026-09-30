@@ -142,7 +142,8 @@ class TopologyTest {
     }
 
     @Test
-    void ringClosesOnTheLastHopWithTheCycleAsEvidence() {
+    void aRingIsVisibleFromItsSecondHopNotOnlyWhenItCloses() {
+        // each hop forwards ~97% of what arrived two minutes earlier
         String[] ring = {"u_a", "u_b", "u_c", "u_d"};
         for (int i = 0; i < ring.length; i++) {
             String src = ring[i], dst = ring[(i + 1) % ring.length];
@@ -150,12 +151,44 @@ class TopologyTest {
         }
         List<Decision> out = decisions.readValuesToList();
         assertThat(out).hasSize(4);
-        for (int i = 0; i < 3; i++) assertThat(out.get(i).verdict()).as("hop %d", i).isEqualTo(Verdict.ALLOW);
+
+        // hop 0 is the origin: nothing arrived in u_a first, so it is indistinguishable from a normal transfer
+        assertThat(out.get(0).verdict()).isEqualTo(Verdict.ALLOW);
+        assertThat(out.get(0).features()).containsEntry("chainDepth", 0).containsEntry("secsSinceInbound", -1.0);
+
+        // hops 1 and 2 forward money that arrived minutes earlier: PASS_THROUGH, before any cycle exists.
+        // The model is absent here (DegradedScoringClient), so the fail-safe row makes them REVIEW.
+        for (int i = 1; i <= 2; i++) {
+            Decision d = out.get(i);
+            assertThat(d.firedRules()).as("hop %d", i).containsExactly(GraphCheck.PASS_THROUGH);
+            assertThat(d.verdict()).as("hop %d", i).isEqualTo(Verdict.REVIEW);
+            assertThat(d.features()).containsEntry("chainDepth", i).containsEntry("secsSinceInbound", 120.0)
+                    .containsEntry("inCycle", false);
+            assertThat(d.signals().get(0).evidence())
+                    .containsEntry("inboundFrom", ring[i - 1])
+                    .containsEntry("chainDepth", i);
+        }
+
+        // hop 3 closes the ring and is also the deepest pass-through
         Decision last = out.get(3);
         assertThat(last.verdict()).isEqualTo(Verdict.REVIEW);
-        assertThat(last.firedRules()).containsExactly(GraphCheck.CODE);
-        assertThat(last.features()).containsEntry("inCycle", true).containsEntry("componentSize", 4).containsEntry("nodeDegree", 1);
+        assertThat(last.firedRules()).containsExactly(GraphCheck.CODE, GraphCheck.PASS_THROUGH);
+        assertThat(last.features()).containsEntry("inCycle", true).containsEntry("componentSize", 4)
+                .containsEntry("nodeDegree", 1).containsEntry("chainDepth", 3);
         assertThat(last.signals().get(0).evidence()).containsEntry("cycle", List.of("u_d", "u_a", "u_b", "u_c", "u_d"));
+    }
+
+    @Test
+    void forwardingAVeryDifferentAmountIsNotPassThrough() {
+        // u_x receives 40,000 then pays a friend 300: spending, not forwarding
+        pipe(new Transaction("in", "u_w", "m_P2P_0000", "u_x", 40_000, "INR", 17.38, 78.48, "d", Channel.P2P, Fixtures.T0));
+        pipe(new Transaction("out", "u_x", "m_P2P_0000", "u_y", 300, "INR", 17.38, 78.48, "d", Channel.P2P, Fixtures.T0.plusSeconds(90)));
+        Decision out = decisions.readValuesToList().get(1);
+        assertThat(out.firedRules()).isEmpty();
+        assertThat(out.verdict()).isEqualTo(Verdict.ALLOW);
+        // the model still gets the context that money did arrive, and how it compares
+        assertThat(out.features()).containsEntry("chainDepth", 0).containsEntry("passThroughRatio", 0.008)
+                .containsEntry("secsSinceInbound", 90.0);
     }
 
     @Test

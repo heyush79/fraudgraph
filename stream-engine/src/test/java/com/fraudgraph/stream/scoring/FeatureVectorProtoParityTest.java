@@ -60,6 +60,9 @@ class FeatureVectorProtoParityTest {
         assertThat(p.getInCycle()).isTrue();
         assertThat(p.getComponentSize()).isEqualTo(10);
         assertThat(p.getChannel()).isEqualTo(2); // P2P
+        assertThat(p.getPassThroughRatio()).isEqualTo(0.961);
+        assertThat(p.getSecsSinceInbound()).isEqualTo(184.0);
+        assertThat(p.getChainDepth()).isEqualTo(2);
         // no proto field left at its default that the record set to something else
         for (Descriptors.FieldDescriptor f : p.getDescriptorForType().getFields()) {
             assertThat(p.hasField(f) || f.getName().equals("txn_id")).as(f.getName()).isTrue();
@@ -67,6 +70,6 @@ class FeatureVectorProtoParityTest {
     }
 
     static FeatureVector sample() {
-        return new FeatureVector("t-1", 4, 22, 71, 24291.6, 3.8, 79.4, 126.7, 1, 2, true, 10, Channel.P2P);
+        return new FeatureVector("t-1", 4, 22, 71, 24291.6, 3.8, 79.4, 126.7, 1, 2, true, 10, Channel.P2P, 0.961, 184.0, 2);
     }
 }

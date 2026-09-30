@@ -25,16 +25,34 @@ import java.util.Set;
  * (in-memory by design); it warms back up within the 24h TTL.
  */
 public final class TransactionGraph {
+    /** Pass-through detection settings; see application.yml fraudgraph.graph for the reasoning. */
+    public record PassThroughConfig(long windowMs, double minRatio, double maxRatio) {
+        public static final PassThroughConfig DEFAULT = new PassThroughConfig(60 * 60_000L, 0.80, 1.02);
+    }
+
+    /** A transfer that arrived in a node: who sent it, how much, when, and its chain depth. */
+    private record Inbound(String src, double amount, long tsMs, int depth) {}
+
+    /** Long laundering chains exist, but beyond this the feature carries no extra information. */
+    private static final int MAX_CHAIN_DEPTH = 10;
+
     private final int maxEdgesPerNode;
     private final long edgeTtlMs;
     private final int maxCycleDepth;
+    private final PassThroughConfig passThrough;
     private final Map<String, Deque<Edge>> adjacency = new HashMap<>();
+    private final Map<String, Deque<Inbound>> inbound = new HashMap<>();
     private final UnionFind components = new UnionFind();
 
     public TransactionGraph(int maxEdgesPerNode, long edgeTtlMs, int maxCycleDepth) {
+        this(maxEdgesPerNode, edgeTtlMs, maxCycleDepth, PassThroughConfig.DEFAULT);
+    }
+
+    public TransactionGraph(int maxEdgesPerNode, long edgeTtlMs, int maxCycleDepth, PassThroughConfig passThrough) {
         this.maxEdgesPerNode = maxEdgesPerNode;
         this.edgeTtlMs = edgeTtlMs;
         this.maxCycleDepth = maxCycleDepth;
+        this.passThrough = passThrough;
     }
 
     /**
@@ -45,14 +63,65 @@ public final class TransactionGraph {
         if (src == null || dst == null || src.equals(dst)) {
             return view(src, tsMs, List.of());
         }
+        // Read what arrived in src BEFORE recording this transfer, so a transfer never forwards itself.
+        GraphView.PassThrough pt = passThroughFor(src, amount, tsMs);
+
         Deque<Edge> edges = adjacency.computeIfAbsent(src, k -> new ArrayDeque<>());
         expire(edges, tsMs);
-        edges.addLast(new Edge(dst, amount, tsMs));
+        edges.addLast(new Edge(dst, amount, tsMs, pt.chainDepth()));
         while (edges.size() > maxEdgesPerNode) edges.pollFirst();
+
+        Deque<Inbound> arrivals = inbound.computeIfAbsent(dst, k -> new ArrayDeque<>());
+        arrivals.addLast(new Inbound(src, amount, tsMs, pt.chainDepth()));
+        while (arrivals.size() > maxEdgesPerNode) arrivals.pollFirst();
+
         components.union(src, dst);
 
         List<String> cycle = CycleDetector.findCycle(src, dst, maxCycleDepth, node -> liveDestinations(node, tsMs));
-        return view(src, tsMs, cycle);
+        GraphView base = view(src, tsMs, cycle);
+        return new GraphView(base.cycle(), base.outDegree(), base.componentSize(), pt);
+    }
+
+    /**
+     * Does this outgoing transfer forward money that arrived in {@code src} shortly before?
+     *
+     * <p>Picks the most recent inbound within the window whose amount this transfer matches within
+     * the ratio band; that is the money being forwarded, and the chain depth extends from it. When
+     * nothing in the band matches, the most recent inbound is still reported (depth 0) so the model
+     * can see "received ₹40,000, sent ₹300", which is evidence against pass-through.
+     *
+     * <p>Known limitation: the graph is shared across stream threads and each thread processes its
+     * own partitions, so under a large replay backlog a forwarding hop can be processed before the
+     * hop that funded it, and the match is missed. In steady state hops are minutes apart and
+     * partitions are milliseconds apart.
+     */
+    private GraphView.PassThrough passThroughFor(String src, double amount, long tsMs) {
+        Deque<Inbound> arrivals = inbound.get(src);
+        if (arrivals == null) return GraphView.PassThrough.NONE;
+        long cutoff = tsMs - passThrough.windowMs();
+        arrivals.removeIf(i -> i.tsMs() < cutoff);
+        if (arrivals.isEmpty()) {
+            inbound.remove(src);
+            return GraphView.PassThrough.NONE;
+        }
+        Inbound latest = null;
+        Inbound match = null;
+        for (Iterator<Inbound> it = arrivals.descendingIterator(); it.hasNext(); ) {
+            Inbound i = it.next();
+            if (i.tsMs() > tsMs) continue;          // stamped after this transfer: cannot be what it forwards
+            if (latest == null) latest = i;
+            double ratio = i.amount() > 0 ? amount / i.amount() : 0;
+            if (ratio >= passThrough.minRatio() && ratio <= passThrough.maxRatio()) {
+                match = i;
+                break;
+            }
+        }
+        Inbound used = match != null ? match : latest;
+        if (used == null) return GraphView.PassThrough.NONE;
+        double ratio = used.amount() > 0 ? Math.round(amount / used.amount() * 1000.0) / 1000.0 : 0.0;
+        long secs = Math.max(0L, (tsMs - used.tsMs()) / 1000L);
+        int depth = match != null ? Math.min(MAX_CHAIN_DEPTH, match.depth() + 1) : 0;
+        return new GraphView.PassThrough(used.src(), used.amount(), ratio, secs, depth);
     }
 
     /** Read-only view for a user who did not transfer (card/UPI txn). */
@@ -107,7 +176,8 @@ public final class TransactionGraph {
      */
     public record Neighborhood(List<Node> nodes, List<Edge> edges, List<List<String>> cycles, int componentSize) {
         public record Node(String id, int degree, int depth) {}
-        public record Edge(String src, String dst, double amount, long tsMs) {}
+        /** {@code chainDepth} > 0 marks a pass-through hop, so a UI can draw the laundering chain. */
+        public record Edge(String src, String dst, double amount, long tsMs, int chainDepth) {}
     }
 
     /**
@@ -127,7 +197,7 @@ public final class TransactionGraph {
             int d = seen.get(node);
             if (d >= depth) continue;
             for (Edge e : liveEdges(node, nowMs)) {
-                edges.add(new Neighborhood.Edge(node, e.dst(), e.amount(), e.tsMs()));
+                edges.add(new Neighborhood.Edge(node, e.dst(), e.amount(), e.tsMs(), e.depth()));
                 if (!seen.containsKey(e.dst())) {
                     seen.put(e.dst(), d + 1);
                     frontier.add(e.dst());

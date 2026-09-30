@@ -120,7 +120,10 @@ public final class CheckProcessor implements Processor<String, EnrichedTransacti
                 round2(amtZ), round1(geoSpeed), secsSinceLast,
                 enriched.merchantRiskTier(),
                 gv.outDegree(), gv.inCycle(), gv.componentSize(),
-                txn.channel()
+                txn.channel(),
+                gv.passThrough().ratio(),
+                gv.passThrough().inboundFrom() == null ? -1.0 : gv.passThrough().secsSinceInbound(),
+                gv.passThrough().chainDepth()
         );
 
         // 4. now the current txn becomes history
