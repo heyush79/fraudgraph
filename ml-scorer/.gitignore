@@ -1,4 +1,9 @@
 scorer/gen/
 registry/v*/
+# The served model ships with the repository (weights and metadata, not its training frame),
+# so a fresh clone or a new VM scores from the first minute instead of running rules-only
+# until someone trains. Move this pair to the new version when one replaces it.
+!registry/v3/
+registry/v3/data.parquet
 .venv/
 __pycache__/

@@ -1,0 +1,1 @@
+{"userId":"u_21131","depth":2,"nodes":[{"id":"u_21131","degree":1,"depth":0},{"id":"u_15104","degree":0,"depth":1}],"edges":[{"src":"u_21131","dst":"u_15104","amount":218.1,"tsMs":1790736774650,"chainDepth":0}],"cycles":[],"componentSize":2}

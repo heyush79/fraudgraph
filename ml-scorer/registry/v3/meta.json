@@ -1,0 +1,65 @@
+{
+  "version": "v3",
+  "trained_at": "2026-09-30T13:49:08+00:00",
+  "git_sha": "b0a2e02",
+  "features": [
+    "cnt_1m",
+    "cnt_5m",
+    "cnt_1h",
+    "sum_1h",
+    "amt_z",
+    "geo_speed_kmh",
+    "secs_since_last",
+    "merchant_risk_tier",
+    "node_degree",
+    "in_cycle",
+    "component_size",
+    "channel",
+    "pass_through_ratio",
+    "secs_since_inbound",
+    "chain_depth"
+  ],
+  "rows": 357011,
+  "staleRowsSkipped": 39496,
+  "positives": 6936,
+  "split": {
+    "test_fraction": 0.2,
+    "train_rows": 285608,
+    "test_rows": 71403,
+    "train_from": "2026-09-29T16:24:04.826000+00:00",
+    "train_to": "2026-09-30T04:13:34.883000+00:00",
+    "test_from": "2026-09-30T04:13:34.896000+00:00",
+    "test_to": "2026-09-30T13:49:07.002000+00:00"
+  },
+  "params": {
+    "n_estimators": 200,
+    "max_depth": 6,
+    "scale_pos_weight": 51.3
+  },
+  "metrics": {
+    "pr_auc": 0.8742,
+    "roc_auc": 0.9896
+  },
+  "suggested_thresholds": {
+    "block": null,
+    "review": 0.95,
+    "block_min_precision": 0.98
+  },
+  "feature_importance_gain": {
+    "merchant_risk_tier": 3037.587,
+    "chain_depth": 1890.976,
+    "cnt_1m": 1077.447,
+    "channel": 707.319,
+    "secs_since_last": 444.401,
+    "amt_z": 406.032,
+    "geo_speed_kmh": 223.429,
+    "pass_through_ratio": 145.304,
+    "sum_1h": 104.063,
+    "cnt_1h": 101.637,
+    "component_size": 63.776,
+    "cnt_5m": 54.753,
+    "node_degree": 50.143,
+    "in_cycle": 33.036,
+    "secs_since_inbound": 21.77
+  }
+}

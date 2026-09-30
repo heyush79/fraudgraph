@@ -1,0 +1,1 @@
+{"userId":"u_19643","depth":2,"nodes":[{"id":"u_19643","degree":1,"depth":0},{"id":"u_19848","degree":1,"depth":1},{"id":"u_15701","degree":1,"depth":2}],"edges":[{"src":"u_19643","dst":"u_19848","amount":2974.55,"tsMs":1790776471957,"chainDepth":2},{"src":"u_19848","dst":"u_15701","amount":3349.09,"tsMs":1790701779584,"chainDepth":0}],"cycles":[],"componentSize":14443}
