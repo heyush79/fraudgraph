@@ -14,7 +14,9 @@ Python generator → Kafka `transactions.raw` (keyed by userId, 6 partitions) �
 - `ml-scorer/` — Python, gRPC serving + FastAPI admin, training pipeline in `training/`
 - `case-service/` — Java 17, Spring Boot 3, Postgres, WebSocket feed
 - `analyst-agent/` — Python, LangGraph + ChromaDB
-- `dashboard/` — React (Vite), intentionally thin
+- `dashboard/` — React (Vite); the public console, `live` or `replay` data mode (contract: `docs/showcase-contract.md`)
+- `showcase/` — Python, records a live session into the static replay the GitHub Pages site plays
+- `deploy/` — public deployment: compose overlay + Caddy for a free VM, `make share` tunnel settings
 - `proto/scoring.proto` — single source of truth for the feature vector; Java AND Python codegen from it
 
 ## Non-negotiable design decisions (from the LLD — do not "improve" these without asking)
@@ -41,6 +43,10 @@ Python generator → Kafka `transactions.raw` (keyed by userId, 6 partitions) �
 - `make train` — train a scorer version from fraud.decisions + transactions.labels (TRAIN_HOURS=24) and hot-reload it; `make evaluate` prints the threshold sweep
 - `make bench` — latency benchmark (generator at high tps, no fraud)
 - `make evals` — score the analyst agent against the generator's ground truth (needs `GROQ_API_KEY`)
+- `make recall` — production recall per fraud pattern from the live verdicts (`RECALL_SINCE=<iso>` pins the window)
+- `make scenario-ring|geo|velocity|policy` — one labelled episode now, compressed to watchable pace
+- `make share` — temporary public HTTPS URL for the local stack (cloudflared; read-only, rate-limited)
+- `uv run python record.py` in `showcase/` — record a live session into `dashboard/public/showcase/` for the replay site
 
 ## Current status
 <!-- keep this section updated as you build -->
@@ -49,3 +55,4 @@ Python generator → Kafka `transactions.raw` (keyed by userId, 6 partitions) �
 - [x] Phase 3: ML scorer + gRPC + circuit breaker (2026-09-12; trains from the fraud.decisions feature log, see LLD §4.3 amendment)
 - [x] Phase 4: case service + dashboard (2026-09-13; engine gained a /read API, Redis holds per-user recent decisions)
 - [x] Phase 5: analyst agent + evals (2026-09-14; runs on Groq's free tier, provider is one env var)
+- [x] Showcase (2026-09-29 – 09-30): PASS_THROUGH signal + features (production ring recall 7.2% → 84.5%, LLD §3.5), model v3 served by feature name and shipped in `ml-scorer/registry/v3`, "ask the analyst" endpoint with sentence-level verification, verifier tightened (LLD §6.2), scenarios, recorder, GitHub Pages replay, `deploy/`. Design doc: `docs/DESIGN.md`. Open items: LLD §11 items 5–9.

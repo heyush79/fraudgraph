@@ -166,6 +166,8 @@ Amount z-score = `(amount − mean) / std` (guard std < ε → z = 0, and requir
 - **Union-Find** (path compression + union by rank, amortized ~O(1)) maintains components for the `componentSize` feature and lets the agent ask "who else is in this cluster?"
 - Why not Neo4j in v1: a network hop per transaction on the hot path for a graph that fits in memory is the wrong trade — this is your best "justify the boring choice" answer. Neo4j is the v2 path once the graph outgrows heap.
 
+*Amendment (showcase, 2026-09-29) — `PASS_THROUGH`, because a ring is only a ring once it closes.* Cycle membership can only fire on the transfer that completes the cycle, so every earlier hop of a ring looks like an ordinary P2P transfer, fires nothing, and (§3.6) is never shown to the model. Measured on the running system (`training/production_recall.py`, 94 complete ring episodes): 0% of first hops, 0.7% of middle hops and 39.4% of closing hops flagged, 7.2% of ring transfers overall, against the model's 44% offline recall. The graph now also remembers each account's recent inbound transfers (`Inbound(src, amount, ts, depth)`, 60-minute window) and, when an account sends money onwards, checks whether it is forwarding one of them: ratio of this amount to the inbound one within `[0.80, 1.02]` (a mule keeps a cut; sending on more than arrived is not forwarding). A match fires `PASS_THROUGH` with evidence `{inboundFrom, inboundAmount, outboundAmount, ratio, secsSinceInbound, chainDepth, counterpartyId}`; `chainDepth` counts consecutive forwarding hops (capped at 10) and drives severity `min(1, depth/3)`. The same three numbers become model features (§4.1). The origin of a ring still cannot be told from an ordinary transfer until someone forwards it, so first-hop recall stays near zero by construction; that is a structural limit (§11), not a tuning problem. Measured with the model unchanged (v2, one hour, 167 complete rings): ring recall 7.2% → 71.9%, middle hops 0.7% → 85.9%, closing hops 39.4% → 95.2%; the signal fired on 1.57% of legitimate P2P transfers and legitimate payments flagged rose from 0.038% to 0.082% of traffic. v3, trained on the new features, against itself trained without them on the same rows: PR-AUC 0.803 → 0.874, and at the review threshold the same ring recall with 63% fewer legitimate rows flagged. In production behind the new gate (73 minutes, 161 complete rings) v3 reached ring recall 84.5% (middle hops 99.7%, closing 100%), automatic BLOCK precision 98.7%, and legitimate payments flagged 0.085%: the offline false-positive gain did not carry over, because honest forwards that pass the gate look like mule hops to every feature. Config: `graph.passThroughWindowMins: 60`, `passThroughMinRatio: 0.80`, `passThroughMaxRatio: 1.02`, `passThroughMinDepth: 1`.
+
 ### 3.6 Decision stage
 
 ```java
@@ -186,6 +188,8 @@ Decision d = thresholdPolicy.decide(txn, signals, ml); // rules first, then thre
 | scorer DEGRADED and ≥ 1 signal | REVIEW (fail-safe: never auto-block on rules alone in degraded mode, except hard rules) |
 | otherwise | ALLOW |
 
+*Amendment (showcase, 2026-09-29) — the gate bounds production recall.* `invokeModel` means a fraud pattern that fires no rule-based signal is scored only by the 1% shadow sample, so the model's offline recall on it says nothing about production. `training/production_recall.py` (`make recall`) measures what the running system actually flagged per pattern, joining `fraud.decisions` to `transactions.labels`, and reports how often the model was even consulted. Baseline (model v2, 117k decisions): velocity 62.6%, geo 43.2%, ring 7.2%, with "model consulted" within a point of recall for every pattern, i.e. the gate, not the model, is what bounds recall. The fix taken for rings is a better gate (`PASS_THROUGH`, §3.5). Scoring every transaction would remove the gate altogether at the cost of one gRPC call per transaction on the hot path; that is a decision for this document, not a side effect of a fix, and is left open.
+
 **ScoringClient resilience** (Resilience4j): timeout 150ms (a gRPC deadline); circuit breaker — count-based sliding window 50 calls, minimum 10 calls before it can open (*added in Phase 3*: a dead scorer is obvious after ten calls, waiting for fifty would mean fifty 150 ms stalls), open at 50% failure, automatic half-open probe after 10s with 5 permitted probe calls. Open breaker → `DegradedScoringClient` returns `ScoreResult.degraded()` and the decision carries `mode: DEGRADED`. Every state transition logged + countered (`fraudgraph_breaker_state`).
 
 ### 3.7 Error handling
@@ -199,6 +203,8 @@ Decision d = thresholdPolicy.decide(txn, signals, ml); // rules first, then thre
 ## 4. ML scorer (Python)
 
 ### 4.1 gRPC contract (`proto/scoring.proto`)
+
+*Amendment (showcase, 2026-09-29):* three features appended, `pass_through_ratio = 14`, `secs_since_inbound = 15` (−1 when nothing arrived in the window) and `chain_depth = 16` (§3.5). Field numbers only ever grow.
 
 ```proto
 service ScoringService { rpc Score (FeatureVector) returns (ScoreResult); }
@@ -243,11 +249,15 @@ ml-scorer/
 4. `evaluate.py` sweeps thresholds, writes precision/recall/F1 per threshold; you pick the decision thresholds *from this table*, which turns your threshold config from magic numbers into an artifact.
 5. Optional second model: `IsolationForest` trained without labels — keep it behind `/score?model=iforest` for the "what if you had no labels" interview conversation.
 
+*Amendments (showcase, 2026-09-29):* decisions logged before a feature existed lack it and are skipped (counted in `meta.staleRowsSkipped`) rather than imputed. `--exclude-features a,b` trains on the same rows and the same time split without some features, the ablation that separates what a feature is worth from what new data is worth. `production_recall.py` sits next to `evaluate.py` because offline recall and production recall answer different questions (§3.6).
+
 ### 4.4 Serving
 
 - `grpc.aio` with 4 workers; model + explainer loaded once at startup; `/reload` hot-swaps by version directory.
 - SHAP via TreeSHAP; compute top-5 contributions per call. (*Amended in Phase 3*: computed with XGBoost's native `pred_contribs=True`, which is the same TreeSHAP algorithm `shap.TreeExplainer` runs for tree models, without adding numba/llvmlite to the serving image. Values are in log-odds space.) If p99 exceeds ~40ms budget, compute SHAP only when `probability > 0.4` — scores that will be ALLOW anyway don't need explanations. Nice optimization story.
 - Metrics: score histogram, latency histogram, model_version gauge → basis for drift monitoring (v2: PSI between serving and training score distributions).
+
+*Amendment (showcase, 2026-09-29) — models are served by feature name.* A model scores the columns it was trained on, picked by name out of the vector the build produces, so appending a feature to the proto does not strand the models already trained: they keep serving while the next one trains, and `/health` lists the served features they ignore (`unusedFeatures`). A model that needs a feature the build does not produce (a rollback) is refused and skipped at startup with the reason in `/health` (`incompatible`); `/reload` of one answers 409.
 
 ---
 
@@ -354,6 +364,8 @@ Report schema forces citations:
 
 Numbers inside ISO timestamps are stripped before extraction: they say *when*, not *how many*. **This is a hallucination guard implemented as code, not prompt-begging** — the single most differentiating thing in the project for AI Engineer interviews.
 
+*Amendment (showcase, 2026-09-29) — the tolerances above were looser than they read.* Three holes, found while building the chat (§6.4), each with a test: (a) "integers below three" was implemented as *any number* below three, so a fabricated score of 0.42 for a decision scored 0.9997 passed; only whole numbers are exempt now. (b) The rounding rule also accepted any two values that round to the same integer, so 0.42 matched a 0.25 elsewhere in the payload; a quote now matches when it is within 1%, within half a unit in its own last decimal place (1.5672 as "1.6"), or is a whole-number truncation. (c) The number of keys in an object counted as evidence, so "flagged 12 times" passed because a decision document has twelve fields; only list sizes count now, and digits inside UUIDs are ignored. Three loosenings, all from live answers: magnitudes are compared rather than signs (direction is carried by the words, and Unicode minus signs made correct quotes fail); a percentage may cite a ratio ("forwarded 96%" for `ratio: 0.961`); and a thousands separator written as a narrow or no-break space ("13 805") is one number, not "13" and "805". Re-running the tightened check over every finding stored so far rejected none of them. What it still cannot do is check meaning: a number that exists in the cited evidence passes whatever the sentence claims it is (§11).
+
 Embeddings: closed reports → `sentence-transformers all-MiniLM-L6-v2` → Chroma. Similar-case retrieval means the agent can say "matches case #12 (confirmed ring, 2 days ago)".
 
 ### 6.3 Agent eval harness
@@ -364,7 +376,19 @@ Because the generator knows ground truth, you get automatic agent evals: for eac
 
 ---
 
+### 6.4 Ask the analyst (added for the showcase, 2026-09-29)
+
+`POST /cases/{caseId}/ask {question, history?}` answers one question about a case, synchronously, under the same guard as the reports. Contract and response shape: `docs/showcase-contract.md`.
+
+- **Evidence**: `[0]` is the engine's decision document; `[1..]` are the tool results the agent's report already gathered, re-indexed so an answer's citations point into its own response. Tool arguments are filled from the case, never from the model, so a question cannot aim a tool at an account the case does not involve. Still read-only and only through the case service (§6.1).
+- **One model call in the common case.** Questions the decision alone cannot answer are routed before the first draft (history for "normal / usual / genuine…", the transfer graph for "where did the money go / ring…"); otherwise the model may answer or name up to two tools it needs (`{"needs": [...]}`), and is then told to answer.
+- **Sentence-level verification**: each sentence is a claim with `refs`; `verify_claims` (§6.2) removes the ones that fail, and they are returned in `removed` with the reason rather than silently dropped, so the guard is visible. If nothing survives, one rewrite with the specific violations.
+- **What the model is shown is shaped, not raw.** The history tool's live window counts describe the moment the question is asked, and the model read them as the account's typical rate every time, whatever the prompt said; the chat's view of history drops them (and per-decision latencies, which only create coincidental number matches). The evidence panel shows exactly that view.
+- **Quota**: identical questions are answered from an hour-long cache; per-client and global per-minute/per-day limits (off by default, on for any public deployment) sized to the provider's free tier; 429 with `Retry-After` when exceeded.
+
 ## 7. Generator (Python)
+
+*Amendments (showcase, 2026-09-29):* ring labels carry `hop` and `hops`, so recall by position in a ring is exact rather than inferred. `python -m generator.scenario ring|geo|velocity|policy` (`make scenario-*`) publishes one episode now, compressed to a pace someone can watch (a 5-account ring in about a minute), on the same population and with the same labels, alongside the running generator.
 
 - Poisson arrivals (~50 tps default) over ~20,000 synthetic users, each with a home city, favorite merchants, amount log-normal params, active hours, and 2–4 P2P contacts. (*Amended in Phase 2*: the original ~500 users at 50 tps meant 360 txns per user per hour, which trips the §9 velocity limits for everyone; 20k users gives ~9/h. P2P goes only to contacts so the honest graph stays sparse and accidental 3–5 cycles are rare.)
 - Injectors (each publishes the true label to `transactions.labels`):
@@ -377,6 +401,8 @@ Because the generator knows ground truth, you get automatic agent evals: for eac
 ---
 
 ## 8. Dashboard (React, keep it thin)
+
+*Amendment (showcase, 2026-09-29):* the dashboard became the public face of the project: a live feed, a case investigation view and an "Ask the analyst" panel, with a `replay` data mode that plays a recorded session from static JSON (`showcase/record.py` records it from the running system) so it can be hosted on GitHub Pages with no backend. `docs/showcase-contract.md` is the contract between the two.
 
 Live ticker (WebSocket) with color-coded verdicts, cases table, case detail with the agent report + evidence, and a mini graph view of the user's neighborhood (`react-force-graph`, small). One evening of work, disproportionate demo value. No SSR, no auth, no state library — this is a window into the backend, not a product.
 
@@ -419,5 +445,10 @@ The **feature-parity test** (train-side and serve-side `features.py` produce ide
 2. Single-node Compose; Streams scales by partition count (6 → up to 6 instances) but the demo doesn't show it.
 3. Thresholds hand-picked from one evaluation run; no online recalibration.
 4. No feature store; profile features live only in stream state.
+5. *(added 2026-09-29)* Production recall is bounded by the model gate (§3.6): a pattern that fires no signal is scored only by the 1% shadow sample. PASS_THROUGH widens the gate for layering; the gate itself is a standing design decision.
+6. *(added 2026-09-29)* The first transfer of a ring is indistinguishable from an ordinary one until the money moves on; no check at decision time can catch it. Catching it needs retroactive flagging once the ring is known, which a per-transaction verdict does not model.
+7. *(added 2026-09-29)* The citation check verifies that each quoted number exists in the cited evidence, not that the sentence uses it correctly: "29 blocks" for 29 decisions of any verdict passes. The fix is structured claims (the model fills `{field, value, ref}` and prose is generated from them) or an entailment check, at the cost of a second model call.
+8. *(added 2026-09-30, found by running the engine for 21 hours)* `componentSize` drifts with uptime. Union-find merges components on every transfer and cannot split them when edges expire, so after a day most of the honest contact network is one component (a five-account ring was recorded "inside a cluster of 13,805 accounts"). The feature's distribution therefore depends on how long the engine has been up, which is train/serve skew by the clock. Rebuilding union-find from live edges would not fix it either: honest contacts form a connected network over 24 hours. The fix is to redefine the feature over a short window (components of the last hour of transfers, rebuilt periodically from the adjacency lists), where a ring's accounts stand out, and retrain. Until then the console only states a cluster size when it is small enough to mean something, and the model ranks the feature eleventh of fifteen.
+9. *(added 2026-09-30)* The 1% "shadow" sample in §3.6 is not a shadow: `thresholdPolicy.decide` applies the thresholds to a sampled score like any other, so sampled transactions can be flagged. In one measured hour, 23 of the 147 legitimate payments flagged came from the sample. Proposed: record the sampled score on the decision but decide as if unscored (a true shadow, which is what drift monitoring wants), or rename it. Raised here rather than changed, since it alters verdicts.
 
 Each limitation + its fix is a prepared answer to "how would you scale this?"
