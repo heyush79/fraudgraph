@@ -1,72 +1,103 @@
 /*
- * One place for colour, type and spacing. Light is the base; the dark block
- * below only re-points the same custom properties, so no component stylesheet
- * ever needs a media query of its own.
+ * Colour, type and spacing, defined once. Dark is the base design; light
+ * re-points the same names. The theme follows prefers-color-scheme until the
+ * viewer picks one with the header toggle, which sets data-theme on <html>
+ * (see lib/prefs.ts and the inline script in index.html). No component rule
+ * names a literal colour.
  */
 :root {
-  color-scheme: light dark;
+  color-scheme: dark;
 
-  /* Project palette */
-  --ink: #17222b;
+  --ground: #0b1117;
+  --surface: #111a22;
+  --raised: #172230;
+  --line: #243140;
+  --line-strong: #34465a;
+  --text: #e3eaf0;
+  --muted: #93a4b3;
+  --faint: #5f7080;
+  --accent: #4fb8c0;
+  --accent-ink: #6ccbd2;
+  --on-accent: #0b1117;
+
+  /* Verdicts are semantic, never decoration, and always travel with a word. */
+  --allow: #3fb27f;
+  --review: #e0a33a;
+  --block: #e5534b;
+  /* The same hues as small text. BLOCK is lifted a step: #e5534b is 4.75:1 on
+     the surface but 4.2:1 on the block tint that BLOCK rows and pills sit on,
+     short of 4.5:1 for 11 px labels; #f0736c is 5.4:1 there. */
+  --allow-ink: #3fb27f;
+  --review-ink: #e0a33a;
+  --block-ink: #f0736c;
+
+  --scrim: rgb(3 7 10 / 0.62);
+
+  --font-sans: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
+    'Liberation Mono', monospace;
+  --font-display: 'Bricolage Grotesque', 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+
+  --r: 4px;
+  --r-lg: 6px;
+}
+
+/* Everything derived is derived here, from the tokens above, so it follows the theme. */
+:root {
+  --line-soft: color-mix(in srgb, var(--line) 55%, transparent);
+  --allow-tint: color-mix(in srgb, var(--allow) 11%, var(--surface));
+  --review-tint: color-mix(in srgb, var(--review) 12%, var(--surface));
+  --block-tint: color-mix(in srgb, var(--block) 13%, var(--surface));
+  --accent-tint: color-mix(in srgb, var(--accent) 13%, var(--surface));
+  --review-flash: color-mix(in srgb, var(--review) 42%, var(--surface));
+  --block-flash: color-mix(in srgb, var(--block) 46%, var(--surface));
+  --hit: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) {
+    color-scheme: light;
+    --ground: #f4f6f8;
+    --surface: #ffffff;
+    --raised: #eef1f4;
+    --line: #d8dfe5;
+    --line-strong: #bcc7d0;
+    --text: #17222b;
+    --muted: #4a5966;
+    --faint: #75838f;
+    --accent: #0f6e76;
+    --accent-ink: #0b555b;
+    --on-accent: #ffffff;
+    --allow: #2e7d4f;
+    --review: #b7791f;
+    --block: #b3362b;
+    --allow-ink: #2e7d4f;
+    /* #b7791f is 3.6:1 on white; text uses a darker step of the same hue (5.9:1). */
+    --review-ink: #8a5a12;
+    --block-ink: #b3362b;
+    --scrim: rgb(23 34 43 / 0.32);
+  }
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --ground: #f4f6f8;
+  --surface: #ffffff;
+  --raised: #eef1f4;
+  --line: #d8dfe5;
+  --line-strong: #bcc7d0;
+  --text: #17222b;
   --muted: #4a5966;
+  --faint: #75838f;
   --accent: #0f6e76;
   --accent-ink: #0b555b;
+  --on-accent: #ffffff;
   --allow: #2e7d4f;
   --review: #b7791f;
   --block: #b3362b;
-
-  --bg: #f4f6f8;
-  --surface: #ffffff;
-  --surface-2: #eef1f4;
-  --border: #d8dfe5;
-  --border-strong: #bcc7d0;
-
-  /* Verdict tints for row backgrounds — colour is always paired with a label */
-  --allow-tint: #eaf5ee;
-  --review-tint: #fdf4e3;
-  --block-tint: #fbecea;
-  --accent-tint: #e4f1f2;
-
-  --shadow: 0 1px 2px rgba(23, 34, 43, 0.06), 0 6px 18px rgba(23, 34, 43, 0.05);
-
-  --font-sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
-    'Helvetica Neue', Arial, sans-serif;
-  --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
-    'Liberation Mono', monospace;
-
-  --r-sm: 4px;
-  --r-md: 8px;
-  --r-lg: 12px;
-
-  --sp-1: 4px;
-  --sp-2: 8px;
-  --sp-3: 12px;
-  --sp-4: 16px;
-  --sp-5: 24px;
-  --sp-6: 32px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --ink: #e4ebf1;
-    --muted: #93a3b0;
-    --accent: #3fa8b0;
-    --accent-ink: #6cc7ce;
-    --allow: #55b57e;
-    --review: #dda344;
-    --block: #e2705f;
-
-    --bg: #0e161c;
-    --surface: #151f27;
-    --surface-2: #1c2831;
-    --border: #27343e;
-    --border-strong: #3a4a56;
-
-    --allow-tint: #142b20;
-    --review-tint: #2e2413;
-    --block-tint: #331916;
-    --accent-tint: #102b2e;
-
-    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.3);
-  }
+  --allow-ink: #2e7d4f;
+  --review-ink: #8a5a12;
+  --block-ink: #b3362b;
+  --scrim: rgb(23 34 43 / 0.32);
 }

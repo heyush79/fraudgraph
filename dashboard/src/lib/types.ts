@@ -1,11 +1,13 @@
 /**
- * Mirrors the case-service contract (port 8082). Hand-written on purpose: the
- * backend is Java, there is no shared schema for the REST layer, and these
- * types are the only place the contract is written down on this side.
+ * Mirrors the case-service contract (port 8082) and the showcase contract
+ * (docs/showcase-contract.md). Hand-written on purpose: the backend is Java and
+ * Python, there is no shared schema for the REST layer, and these types are the
+ * only place the contract is written down on this side.
  */
 
 export type Verdict = 'ALLOW' | 'REVIEW' | 'BLOCK';
 export type Mode = 'FULL' | 'DEGRADED';
+export const VERDICTS: readonly Verdict[] = ['ALLOW', 'REVIEW', 'BLOCK'];
 
 export const CASE_STATUSES = [
   'OPEN',
@@ -53,6 +55,8 @@ export interface DecisionDoc {
   contributions: Contribution[];
   latencyMs: number;
   decidedAt: string;
+  merchantId?: string;
+  merchantCategory?: string;
 }
 
 export interface CaseSummary {
@@ -163,8 +167,21 @@ export interface Stats {
   last1h: { cases: number; block: number; review: number };
 }
 
+export interface RecentDecision {
+  txnId: string;
+  userId: string;
+  verdict: Verdict;
+  mode: Mode;
+  mlScore: number | null;
+  firedRules: string[];
+  decidedAt: string;
+  latencyMs?: number;
+  caseId?: string | null;
+}
+
 export interface UserHistory {
   userId: string;
+  hours?: number;
   profile: { n: number; mean: number; std: number } | null;
   windows: {
     cnt1m: number;
@@ -175,33 +192,118 @@ export interface UserHistory {
     sum1h: number;
   } | null;
   /** Newest-first, may be empty. */
-  recent: {
-    txnId: string;
-    userId: string;
-    verdict: Verdict;
-    mode: Mode;
-    mlScore: number | null;
-    firedRules: string[];
-    decidedAt: string;
-  }[];
+  recent: RecentDecision[];
 }
 
 export interface GraphNode {
   id: string;
   degree: number;
+  /** Hop distance from the queried user, when the engine sends it. */
+  depth?: number;
 }
 
 export interface GraphEdge {
   src: string;
   dst: string;
   amount: number;
-  ts: string;
+  /** ISO time. Older engines send this; current ones send `tsMs`. */
+  ts?: string;
+  /** Epoch milliseconds. */
+  tsMs?: number;
+  /** How many hops of pass-through this transfer continued: 0 for ordinary money. */
+  chainDepth?: number;
 }
 
 export interface Neighborhood {
   userId: string;
   nodes: GraphNode[];
   edges: GraphEdge[];
+  /** Cycles the queried user sits on, each a node list that starts and ends on that user. */
+  cycles?: string[][];
   componentSize: number;
   depth: number;
+}
+
+/* ---------- showcase contract (docs/showcase-contract.md §2–§4) ---------- */
+
+export interface AnswerSentence {
+  text: string;
+  refs: number[];
+  verified: boolean;
+}
+
+export interface RemovedClaim {
+  text: string;
+  reason: string;
+}
+
+export interface AskStep {
+  kind: 'evidence' | 'tool' | 'draft' | 'verify';
+  label: string;
+  detail?: string;
+  ms?: number;
+}
+
+/**
+ * POST /agent/cases/{caseId}/ask. `answer[i].refs` index into this response's
+ * own `evidence`, never the case report's, and `evidence[i].index === i`.
+ */
+export interface AskResponse {
+  caseId: string;
+  question: string;
+  answer: AnswerSentence[];
+  removed: RemovedClaim[];
+  evidence: EvidenceEntry[];
+  steps: AskStep[];
+  verification: Verification;
+  model: string;
+  latencyMs: number;
+  mode: 'live' | 'replay';
+  /** True when the server answered from its answer cache (same question, same case, within the hour). */
+  cached?: boolean;
+  /** Not in the contract: agent/ask.py adds it when it could not load the case. */
+  note?: string;
+}
+
+export interface ChatTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface FeaturedCase {
+  caseId: string;
+  /** RING | GEO | VELOCITY | POLICY; anything else is shown by its title alone. */
+  pattern: string;
+  title: string;
+  blurb: string;
+}
+
+export interface ShowcaseManifest {
+  recordedAt: string;
+  durationMs: number;
+  tps: number;
+  scorerModel: string;
+  agentModel: string;
+  stats: Stats;
+  featured: FeaturedCase[];
+  /** Set by scripts/snapshot-sample.mjs. A real recording omits it. */
+  sample?: boolean;
+}
+
+/** feed.json: every tick with `at`, ms since the recording started, ascending. */
+export type ReplayTick = FeedTick & { at: number };
+export interface ReplayFeed {
+  ticks: ReplayTick[];
+}
+
+/** ask/{caseId}.json: one recorded answer per recorded question. */
+export interface ReplayAnswers {
+  answers: AskResponse[];
+}
+
+/** GET /agent/health */
+export interface AgentHealth {
+  status: 'UP' | 'NO_MODEL' | string;
+  model?: string;
+  provider?: string;
 }

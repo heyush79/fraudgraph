@@ -2,3 +2,5 @@ node_modules
 dist
 .env
 .env.local
+# Replay data is for the static replay build, not the live image.
+public/showcase

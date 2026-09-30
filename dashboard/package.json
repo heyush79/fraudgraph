@@ -6,8 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "build:replay": "tsc --noEmit && VITE_DATA_MODE=replay VITE_READ_ONLY=true vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "snapshot:sample": "node scripts/snapshot-sample.mjs"
   },
   "dependencies": {
     "react": "^19.3.0",

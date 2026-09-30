@@ -14,6 +14,8 @@ import {
   type NormVerification,
 } from '../lib/report';
 import { DASH, fmtNum, fmtValue, humanKey, titleCase } from '../lib/format';
+import { quantities, splitNumbers, supports, type Quantity } from '../lib/numbers';
+import { Glyph } from './Bits';
 
 /**
  * The analyst agent's report.
@@ -21,10 +23,9 @@ import { DASH, fmtNum, fmtValue, humanKey, titleCase } from '../lib/format';
  * The organising idea is that a sceptical reader must be able to check the
  * agent rather than trust it, so two things come before the prose: whether the
  * programmatic citation check passed, and a path from any single claim to the
- * raw tool output behind it. Citations are therefore buttons that expand the
- * cited evidence inline, under the claim — one click, no scrolling away from
- * the sentence being checked, no network call, and it still works in a phone
- * column where a side-by-side or a popover would not.
+ * raw tool output behind it. Citations are buttons that expand the cited
+ * evidence inline, under the claim, with the numbers the claim quotes marked —
+ * one click, no network call, and it still works in a phone column.
  */
 export function AnalystReport({ report }: { report: ReportDoc }) {
   const r = normalizeReport(report);
@@ -32,8 +33,8 @@ export function AnalystReport({ report }: { report: ReportDoc }) {
   if (!r || r.empty) {
     return (
       <p className="state state--warn">
-        A report was attached to this case but it is empty or unreadable — the agent returned no
-        summary, findings or evidence. Treat the case as un-investigated.
+        A report was attached to this case but it is empty or unreadable: the agent returned no
+        summary, findings or evidence. Treat the case as not investigated.
       </p>
     );
   }
@@ -41,94 +42,75 @@ export function AnalystReport({ report }: { report: ReportDoc }) {
   return (
     <div className="report">
       <VerificationBanner v={r.verification} report={r} />
+      {r.summary ? <p className="report__summary">{r.summary}</p> : null}
       <Verdicts r={r} />
-      {r.summary ? (
-        <p className="report__summary">{r.summary}</p>
-      ) : (
-        <p className="report__summary dim">The agent wrote no summary.</p>
-      )}
       <Findings r={r} />
       <EvidenceList evidence={r.evidence} declared={r.verification?.evidenceCount ?? null} />
     </div>
   );
 }
 
-/* ---------- verification, first and loudest ---------- */
+/* ---------- verification, first ---------- */
 
 function VerificationBanner({ v, report }: { v: NormVerification | null; report: NormReport }) {
   if (!v) {
     return (
       <div className="verify verify--unknown">
         <p className="verify__head">
-          <span className="verify__mark" aria-hidden="true">
-            ?
-          </span>
           <span className="verify__title">Citations not verified</span>
         </p>
         <p className="verify__note">
-          This report carries no verification block, so nothing has checked that its claims are
-          backed by the evidence it cites. Read it as an unchecked draft.
+          This report carries no verification block, so nothing has checked its claims against the
+          evidence they cite. Read it as an unchecked draft.
         </p>
       </div>
     );
   }
 
   const state = v.passed === true ? 'pass' : v.passed === false ? 'fail' : 'unknown';
-  const title =
-    state === 'pass'
-      ? 'Citations verified'
-      : state === 'fail'
-        ? 'Verification failed — escalated'
-        : 'Verification status unknown';
-  const mark = state === 'pass' ? '✓' : state === 'fail' ? '!' : '?';
 
   return (
     <div className={`verify verify--${state}`}>
       <p className="verify__head">
-        <span className="verify__mark" aria-hidden="true">
-          {mark}
+        {state === 'pass' ? <Glyph name="shield" /> : null}
+        <span className="verify__title">
+          {state === 'pass'
+            ? 'Every claim checked against its evidence'
+            : state === 'fail'
+              ? 'Claims failed the check, so the case was escalated'
+              : 'Verification status unknown'}
         </span>
-        <span className="verify__title">{title}</span>
+        <span className="verify__stats mono">
+          {fmtCount(report.findings.length, 'claim')} kept · {fmtCount(v.toolCallsUsed, 'tool call')} ·{' '}
+          {fmtCount(v.attempts, 'attempt')}
+        </span>
       </p>
       <p className="verify__note">
         {state === 'pass' ? (
           <>
-            Every claim below cites an evidence entry that exists, came from a tool call that
-            succeeded, and contains the numbers the claim quotes.
+            Before this report was attached, code checked that each claim cites evidence that exists,
+            came from a tool call that succeeded, and contains every number the claim quotes.
           </>
         ) : state === 'fail' ? (
           <>
-            The checker rejected this report twice, so the case was escalated as{' '}
-            <strong>UNCERTAIN</strong> and unsupported claims were stripped out.{' '}
+            The checker rejected the draft twice, so the case was escalated as{' '}
+            <strong>UNCERTAIN</strong> and unsupported claims were removed.{' '}
             {v.violations.length > 0
-              ? 'The failures are listed below.'
-              : 'No specific violations were recorded, which is itself suspect.'}
+              ? 'What failed is listed below.'
+              : 'No specific failures were recorded.'}
           </>
         ) : (
-          <>
-            The verification block did not say whether the check passed. Do not assume the claims
-            below are supported.
-          </>
+          <>The verification block does not say whether the check passed. Do not assume the claims are supported.</>
         )}
       </p>
       <Violations v={v} report={report} />
-      <dl className="verify__stats">
-        <Stat label="Attempts" value={v.attempts} />
-        <Stat label="Tool calls" value={v.toolCallsUsed} />
-        <Stat label="Evidence entries" value={v.evidenceCount} />
-        <Stat label="Claims kept" value={report.findings.length} />
-      </dl>
     </div>
   );
 }
 
-function Stat({ label, value }: { label: string; value: number | null }) {
-  return (
-    <div className="verify__stat">
-      <dt>{label}</dt>
-      <dd className="mono">{value === null ? DASH : fmtNum(value, 0)}</dd>
-    </div>
-  );
+function fmtCount(n: number | null, noun: string): string {
+  if (n === null) return `${DASH} ${noun}s`;
+  return `${fmtNum(n, 0)} ${noun}${n === 1 ? '' : 's'}`;
 }
 
 function Violations({ v, report }: { v: NormVerification; report: NormReport }) {
@@ -148,18 +130,18 @@ function Violations({ v, report }: { v: NormVerification; report: NormReport }) 
               <span className="viol__where mono">
                 {x.findingIndex === null
                   ? 'whole report'
-                  : `claim #${fmtNum(x.findingIndex + 1, 0)}${stripped ? ' · removed' : ''}`}
+                  : `claim ${fmtNum(x.findingIndex + 1, 0)}${stripped ? ', removed' : ''}`}
               </span>
             </div>
             {x.detail ? <p className="viol__detail">{x.detail}</p> : null}
             {x.claim ? (
               <p className="viol__claim">
-                <span className="field__label">Claim</span> “{x.claim}”
+                <span className="label">Claim</span> &ldquo;{x.claim}&rdquo;
               </p>
             ) : stripped ? (
               <p className="viol__claim dim">
-                That claim is not in the report any more — it was removed when the report was
-                escalated{report.findings.length === 0 ? ', which left no claims at all' : ''}.
+                That claim is no longer in the report: it was removed when the report was escalated
+                {report.findings.length === 0 ? ', which left no claims at all' : ''}.
               </p>
             ) : null}
             {help ? <p className="viol__help dim">{help}</p> : null}
@@ -175,37 +157,28 @@ function Violations({ v, report }: { v: NormVerification; report: NormReport }) 
 function Verdicts({ r }: { r: NormReport }) {
   const action = r.action;
   // CONFIRM_BLOCK reads as the block colour, RELEASE as allow, ESCALATE as
-  // review — the same three colours the verdict pills use, so an analyst does
-  // not learn a second palette.
+  // review: the same three colours as the verdicts, so there is one palette.
   const tone =
-    action === 'CONFIRM_BLOCK'
-      ? 'block'
-      : action === 'RELEASE'
-        ? 'allow'
-        : action === 'ESCALATE'
-          ? 'review'
-          : 'none';
+    action === 'CONFIRM_BLOCK' ? 'block' : action === 'RELEASE' ? 'allow' : action === 'ESCALATE' ? 'review' : 'none';
   const pct = r.confidence === null ? null : Math.round(r.confidence * 100);
 
   return (
     <dl className="report__verdicts">
       <div className="report__verdict">
-        <dt className="field__label">Fraud type</dt>
+        <dt className="label">Fraud type</dt>
         <dd>
-          <span className={`ftype ftype--${(r.fraudType ?? 'none').toLowerCase()}`}>
-            {r.fraudType ?? 'not stated'}
-          </span>
+          <span className={`ftype ftype--${(r.fraudType ?? 'none').toLowerCase()}`}>{r.fraudType ?? 'not stated'}</span>
         </dd>
       </div>
       <div className="report__verdict">
-        <dt className="field__label">Confidence</dt>
+        <dt className="label">Confidence</dt>
         <dd>
           {r.confidence === null ? (
             <span className="dim">not stated</span>
           ) : (
             <span className="conf">
               <span className="conf__num mono">{r.confidence.toFixed(2)}</span>
-              <span className="conf__track" title={`${pct}%`}>
+              <span className="conf__track" title={`${pct}%`} aria-hidden="true">
                 <span className="conf__bar" style={{ width: `${pct}%` }} />
               </span>
             </span>
@@ -213,11 +186,9 @@ function Verdicts({ r }: { r: NormReport }) {
         </dd>
       </div>
       <div className="report__verdict">
-        <dt className="field__label">Recommended action</dt>
+        <dt className="label">Recommends</dt>
         <dd>
-          <span className={`action action--${tone}`}>
-            {action ? titleCase(action) : 'not stated'}
-          </span>
+          <span className={`action action--${tone}`}>{action ? titleCase(action) : 'not stated'}</span>
         </dd>
       </div>
     </dl>
@@ -230,22 +201,19 @@ function Findings({ r }: { r: NormReport }) {
   if (r.findings.length === 0) {
     const failed = r.verification?.passed === false;
     return (
-      <div className="report__section">
-        <h3 className="report__h">Findings</h3>
-        <p className={failed ? 'state state--warn' : 'state state--empty'}>
-          {failed
-            ? 'No findings survived verification. Every claim the agent wrote was unsupported and was stripped out, so there is nothing here to review — the violations above are the whole result.'
-            : 'The agent produced no findings for this case.'}
-        </p>
-      </div>
+      <p className={failed ? 'state state--warn' : 'state state--empty'}>
+        {failed
+          ? 'No findings survived verification. Every claim the agent wrote was unsupported and was removed, so the failures above are the whole result.'
+          : 'The agent produced no findings for this case.'}
+      </p>
     );
   }
 
   return (
     <div className="report__section">
-      <h3 className="report__h">
-        Findings <span className="dim small">· click a citation to see the evidence behind it</span>
-      </h3>
+      <p className="report__h label">
+        Findings <span className="label__aside">click a citation to see the evidence</span>
+      </p>
       <ol className="findings">
         {r.findings.map((f) => (
           <FindingRow key={f.index} f={f} />
@@ -256,19 +224,17 @@ function Findings({ r }: { r: NormReport }) {
 }
 
 function FindingRow({ f }: { f: NormFinding }) {
-  // One open citation per claim: the reader is checking one number at a time,
-  // and keeping several payloads expanded under one sentence buries it.
+  // One open citation per claim: the reader is checking one number at a time.
   const [open, setOpen] = useState<number | null>(null);
   const shown = open === null ? null : f.citations[open];
 
   return (
     <li className="finding">
-      <p className="finding__claim">{f.claim ?? <span className="dim">(empty claim)</span>}</p>
-      <div className="finding__cites">
-        <span className="field__label">Evidence</span>
+      <p className="finding__claim">
+        {f.claim ?? <span className="dim">(empty claim)</span>}{' '}
         {f.uncited ? (
           <span className="cite cite--none" title="This claim cites no evidence at all.">
-            none cited
+            no citation
           </span>
         ) : (
           f.citations.map((c, i) => (
@@ -277,41 +243,38 @@ function FindingRow({ f }: { f: NormFinding }) {
               c={c}
               open={open === i}
               onToggle={() => setOpen(open === i ? null : i)}
-              id={`cite-${f.index}-${i}`}
-              panelId={`cite-panel-${f.index}-${i}`}
+              panelId={`cite-panel-${f.index}`}
             />
           ))
         )}
-      </div>
+      </p>
       {shown ? (
-        <div className="finding__evidence" id={`cite-panel-${f.index}-${open}`}>
-          <CitationBody c={shown} />
+        <div className="finding__evidence" id={`cite-panel-${f.index}`}>
+          <CitationBody c={shown} quoted={quantities(f.claim ?? '')} />
         </div>
       ) : null}
     </li>
   );
 }
 
-function CiteChip({
+export function CiteChip({
   c,
   open,
   onToggle,
-  id,
   panelId,
 }: {
   c: NormCitation;
   open: boolean;
   onToggle: () => void;
-  id: string;
   panelId: string;
 }) {
-  const label = c.ref === null ? fmtValue(c.raw) : `#${c.ref}`;
+  const label = c.ref === null ? fmtValue(c.raw) : String(c.ref);
   const title =
     c.status === 'ok'
-      ? `Evidence ${label} — ${c.entry?.tool ?? 'unknown tool'}. Click to inspect.`
+      ? `Evidence ${label}: ${c.entry?.tool ?? 'unknown tool'}. Click to inspect.`
       : c.status === 'failed'
         ? `Evidence ${label} is a failed tool call and cannot support a claim. Click for the error.`
-        : `Evidence ${label} does not exist in this report's evidence array.`;
+        : `Evidence ${label} does not exist in this evidence list.`;
 
   return (
     <button
@@ -319,25 +282,38 @@ function CiteChip({
       className={open ? `cite cite--${c.status} is-open` : `cite cite--${c.status}`}
       onClick={onToggle}
       aria-expanded={open}
-      aria-controls={panelId}
-      id={id}
+      aria-controls={open ? panelId : undefined}
       title={title}
     >
       <span className="cite__ref mono">{label}</span>
-      {c.entry?.tool ? <span className="cite__tool">{c.entry.tool}</span> : null}
-      {c.status === 'failed' ? <span className="cite__flag">unusable</span> : null}
-      {c.status === 'missing' ? <span className="cite__flag">no such entry</span> : null}
+      {c.entry?.tool ? <span className="cite__tool">{toolWords(c.entry.tool)}</span> : null}
+      {c.status === 'failed' ? <span className="cite__flag">failed</span> : null}
+      {c.status === 'missing' ? <span className="cite__flag">missing</span> : null}
     </button>
   );
 }
 
-function CitationBody({ c }: { c: NormCitation }) {
+const TOOL_WORDS: Record<string, string> = {
+  decision: 'decision',
+  get_case: 'case',
+  get_user_history: 'history',
+  get_window_counts: 'window counts',
+  get_graph_neighborhood: 'graph',
+  find_similar_cases: 'similar cases',
+};
+
+/** "get_window_counts" → "window counts": the chip is a label, the card says the real name. */
+export function toolWords(tool: string): string {
+  return TOOL_WORDS[tool] ?? tool.replace(/^get_/, '').replace(/_/g, ' ');
+}
+
+export function CitationBody({ c, quoted }: { c: NormCitation; quoted: Quantity[] }) {
   if (!c.entry) {
     return (
       <p className="state state--error">
         This claim cites evidence{' '}
-        <span className="mono">{c.ref === null ? fmtValue(c.raw) : `#${c.ref}`}</span>, which is not
-        in the report's evidence array. Nothing supports the claim.
+        <span className="mono">{c.ref === null ? fmtValue(c.raw) : `#${c.ref}`}</span>, which does not
+        exist. Nothing supports the claim.
       </p>
     );
   }
@@ -345,63 +321,60 @@ function CitationBody({ c }: { c: NormCitation }) {
     <>
       {c.entry.failed ? (
         <p className="state state--error">
-          The cited tool call failed, so it carries no data. A claim resting on this is unsupported.
+          The cited tool call failed, so it carries no data. A claim resting on it is unsupported.
         </p>
       ) : null}
-      <EvidenceCard e={c.entry} defaultOpen />
+      <EvidenceCard e={c.entry} defaultOpen quoted={quoted} />
     </>
   );
 }
 
 /* ---------- the full evidence array ---------- */
 
-function EvidenceList({
-  evidence,
-  declared,
-}: {
-  evidence: NormEvidence[];
-  declared: number | null;
-}) {
+function EvidenceList({ evidence, declared }: { evidence: NormEvidence[]; declared: number | null }) {
   if (evidence.length === 0) {
     return (
-      <div className="report__section">
-        <h3 className="report__h">Evidence</h3>
-        <p className="state state--empty">
-          {declared && declared > 0
-            ? `Verification counted ${declared} evidence entries, but none were attached to the report.`
-            : 'No evidence was attached to this report.'}
-        </p>
-      </div>
+      <p className="state state--empty">
+        {declared && declared > 0
+          ? `Verification counted ${declared} evidence entries, but none were attached to the report.`
+          : 'No evidence was attached to this report.'}
+      </p>
     );
   }
-
   const failed = evidence.filter((e) => e.failed).length;
-
   return (
-    <div className="report__section">
-      <h3 className="report__h">
-        Evidence{' '}
+    <details className="evlist">
+      <summary className="evlist__summary">
+        <span className="label">All evidence</span>{' '}
         <span className="dim small">
-          · {evidence.length} tool call{evidence.length === 1 ? '' : 's'}
+          {evidence.length} tool call{evidence.length === 1 ? '' : 's'}
           {failed > 0 ? `, ${failed} failed` : ''}
         </span>
-      </h3>
-      <div className="evlist">
+      </summary>
+      <div className="evlist__items">
         {evidence.map((e) => (
           <EvidenceCard key={`${e.pos}-${e.index}`} e={e} />
         ))}
       </div>
-    </div>
+    </details>
   );
 }
 
 /**
- * One evidence entry. Collapsed by default in the browsable list, expanded
- * when reached from a citation — payloads are arbitrary nested JSON and some
- * are large, so the body is a scroll-capped monospace block rather than
- * something that can push the page around.
+ * One evidence entry. Collapsed in the browsable list, open when reached from
+ * a citation. Payloads are arbitrary nested JSON and some are large, so the
+ * body is a scroll-capped monospace block. When `quoted` is given, every
+ * number in the payload that matches a quantity the claim quotes is marked.
  */
-function EvidenceCard({ e, defaultOpen = false }: { e: NormEvidence; defaultOpen?: boolean }) {
+export function EvidenceCard({
+  e,
+  defaultOpen = false,
+  quoted = [],
+}: {
+  e: NormEvidence;
+  defaultOpen?: boolean;
+  quoted?: Quantity[];
+}) {
   return (
     <details className={`ev ${e.failed ? 'ev--failed' : ''}`} open={defaultOpen}>
       <summary className="ev__head">
@@ -414,22 +387,24 @@ function EvidenceCard({ e, defaultOpen = false }: { e: NormEvidence; defaultOpen
         )}
       </summary>
       <div className="ev__body">
-        <Row label="Arguments">
-          {e.hasArgs ? <Args args={e.args} /> : <span className="dim">none</span>}
-        </Row>
+        {e.hasArgs ? (
+          <Row label="Arguments">
+            <Args args={e.args} />
+          </Row>
+        ) : null}
         {e.failed ? (
           <Row label="Error">
             <p className="ev__error">{e.error}</p>
           </Row>
         ) : e.hasPayload ? (
-          <Row label="Result">
-            <pre className="ev__json mono">{prettyJson(e.payload)}</pre>
+          <Row label={quoted.length > 0 ? 'Result, with the quoted numbers marked' : 'Result'}>
+            <pre className="ev__json mono">
+              <MarkedJson text={prettyJson(e.payload)} quoted={quoted} />
+            </pre>
           </Row>
         ) : (
           <Row label="Result">
-            <span className="dim">
-              The entry has neither a result nor an error, so it proves nothing.
-            </span>
+            <span className="dim">The entry has neither a result nor an error, so it proves nothing.</span>
           </Row>
         )}
       </div>
@@ -437,10 +412,27 @@ function EvidenceCard({ e, defaultOpen = false }: { e: NormEvidence; defaultOpen
   );
 }
 
+function MarkedJson({ text, quoted }: { text: string; quoted: Quantity[] }) {
+  if (quoted.length === 0) return <>{text}</>;
+  return (
+    <>
+      {splitNumbers(text).map((part, i) =>
+        part.value !== null && supports(part.value, quoted) ? (
+          <mark className="hit" key={i}>
+            {part.text}
+          </mark>
+        ) : (
+          part.text
+        ),
+      )}
+    </>
+  );
+}
+
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="ev__row">
-      <span className="field__label">{label}</span>
+      <span className="label">{label}</span>
       <div className="ev__rowbody">{children}</div>
     </div>
   );

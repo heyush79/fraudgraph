@@ -1,233 +1,342 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { api, ApiError } from '../lib/api';
-import { useAsync } from '../lib/useAsync';
-import { href } from '../lib/useHashRoute';
+import { READ_ONLY } from '../config';
+import { source } from '../data';
+import { isNotFound } from '../lib/api';
+import {
+  DASH,
+  fmtClockMs,
+  fmtDateTime,
+  fmtMoney0,
+  fmtNum,
+  fmtPct,
+  fmtScore,
+  fmtSecs,
+  fmtValue,
+  fmtWhen,
+  parseTime,
+  shortId,
+  titleCase,
+} from '../lib/format';
+import { useManifest } from '../lib/hooks';
+import { normalizeReport } from '../lib/report';
+import { featureKey, featureLabel, merchantCategory } from '../lib/signals';
 import {
   CASE_STATUSES,
   type CaseDetail as Detail,
   type CaseStatus,
+  type DecisionDoc,
   type Neighborhood,
   type UserHistory,
 } from '../lib/types';
-import {
-  DASH,
-  fmtAgo,
-  fmtDateTime,
-  fmtMoney,
-  fmtNum,
-  fmtScore,
-  fmtValue,
-  humanKey,
-  titleCase,
-} from '../lib/format';
-import { Async, ErrorBox, ModeTag, Panel, Rules, Spinner, StatusBadge, VerdictPill } from '../components/Bits';
-import { SignalCard } from '../components/SignalCard';
-import { ShapChart } from '../components/ShapChart';
-import { GraphView } from '../components/GraphView';
+import type { AsyncState } from '../lib/useAsync';
+import { useAsync } from '../lib/useAsync';
 import { AnalystReport } from '../components/AnalystReport';
-import { normalizeReport } from '../lib/report';
+import { Async, ErrorBox, Glyph, Loading, ModeTag, RuleWords, Section, StatusBadge, VerdictPill } from '../components/Bits';
+import { GraphView } from '../components/GraphView';
+import { ShapChart } from '../components/ShapChart';
+import { SignalCard } from '../components/SignalCard';
 
-export function CaseDetail({ caseId }: { caseId: string }) {
-  const state = useAsync<Detail>((s) => api.caseDetail(caseId, s), [caseId]);
+const REPLAY = source.mode === 'replay';
+/** A case this young may still be waiting for its report; older ones are not coming. */
+export const REPORT_WAIT_MS = 10 * 60_000;
+
+/**
+ * The centre pane: one case, investigated. Ordered for a reader who has never
+ * seen a fraud console: the verdict, why in plain words, what the analyst
+ * concluded, then the model's reasoning and the raw material behind it.
+ */
+export function CaseDetail({
+  caseId,
+  state,
+  isDefault,
+  onAsk,
+}: {
+  caseId: string | null;
+  state: AsyncState<Detail>;
+  isDefault: boolean;
+  onAsk: () => void;
+}) {
+  const paneRef = useRef<HTMLElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const prevRef = useRef<string | null | undefined>(undefined);
+
+  // A new case starts at its top. On a phone, where the panes stack, bring the
+  // case into view too — but not on first load, which would skip the feed.
+  useEffect(() => {
+    const prev = prevRef.current;
+    prevRef.current = caseId;
+    if (prev === caseId) return;
+    bodyRef.current?.scrollTo?.(0, 0);
+    if (prev && caseId && window.matchMedia?.('(max-width: 699px)').matches) {
+      paneRef.current?.scrollIntoView({ block: 'start' });
+    }
+  }, [caseId]);
 
   return (
-    <div className="detail">
-      <a className="back" href={href('/cases')}>
-        ← All cases
-      </a>
-
-      {state.error && !state.data ? (
-        <Panel title="Case">
-          {state.error instanceof ApiError && state.error.status === 404 ? (
+    <section className="pane pane--case" aria-label="Case investigation" ref={paneRef}>
+      <header className="pane__head">
+        <h2 className="label">Case investigation</h2>
+        <span className="pane__meta faint">
+          {caseId && isDefault ? (REPLAY ? 'featured case' : 'latest reported case') : null}
+        </span>
+        <button type="button" className="btn btn--small ask-open" onClick={onAsk} disabled={!caseId}>
+          <Glyph name="chat" /> Ask the analyst
+        </button>
+      </header>
+      <div className="pane__body case" ref={bodyRef}>
+        {!caseId ? (
+          <p className="state state--empty">
+            Pick a flagged decision in the feed to investigate it. Only REVIEW and BLOCK decisions
+            open cases.
+          </p>
+        ) : state.error && !state.data ? (
+          isNotFound(state.error) ? (
             <p className="state state--empty">
-              No case <span className="mono">{caseId}</span>. It may have been opened against a
-              different database, or the id is wrong.
+              {REPLAY ? (
+                <>This case was not recorded in the replay.</>
+              ) : (
+                <>
+                  No case <span className="mono">{caseId}</span>. It may belong to a different database,
+                  or the link is wrong.
+                </>
+              )}
             </p>
           ) : (
             <ErrorBox error={state.error} onRetry={state.reload} />
-          )}
-        </Panel>
-      ) : null}
-
-      {!state.data && state.loading ? (
-        <Panel title="Case">
-          <Spinner />
-        </Panel>
-      ) : null}
-
-      {state.data ? <Loaded detail={state.data} onUpdated={state.set} /> : null}
-    </div>
+          )
+        ) : !state.data ? (
+          <Loading label="Loading the case…" />
+        ) : (
+          <Loaded detail={state.data} onUpdated={state.set} />
+        )}
+      </div>
+    </section>
   );
 }
 
 function Loaded({ detail, onUpdated }: { detail: Detail; onUpdated: (d: Detail) => void }) {
-  const d = detail.decisionDoc;
-  const userId = detail.userId ?? d?.userId;
+  const d: Partial<DecisionDoc> = detail.decisionDoc ?? {};
+  const userId = detail.userId ?? d.userId;
+  const manifest = useManifest();
+  const featured = manifest.data?.featured?.find((f) => f.caseId === detail.caseId) ?? null;
 
-  const graph = useAsync<Neighborhood>((s) => api.neighborhood(userId, 2, s), [userId]);
-  const history = useAsync<UserHistory>((s) => api.userHistory(userId, 24, s), [userId]);
+  const graph = useAsync<Neighborhood>((s) => source.neighborhood(userId, s), [userId]);
+  const history = useAsync<UserHistory>((s) => source.userHistory(userId, s), [userId]);
+
+  const signals = d.signals ?? [];
+  const ringCycles = signals
+    .filter((s) => s.code === 'RING_SUSPECT' && Array.isArray(s.evidence?.cycle))
+    .map((s) => (s.evidence.cycle as unknown[]).map(String));
+  const contributions = d.contributions ?? [];
+  const score = detail.mlScore ?? d.mlScore ?? null;
+  const hardRule = (d.firedRules ?? detail.firedRules ?? []).some((r) => r === 'HARD_BLOCK_MERCHANT' || r === 'AMOUNT_CAP');
 
   return (
     <>
-      <section className="verdictcard">
-        <div className="verdictcard__main">
-          <div className="verdictcard__verdict">
-            <VerdictPill verdict={detail.verdict} />
-            <ModeTag mode={d?.mode ?? 'FULL'} />
-          </div>
-          <dl className="verdictcard__facts">
-            <Fact label="Model score" value={<span className="mono big">{fmtScore(detail.mlScore ?? d?.mlScore)}</span>} />
-            <Fact label="Decision latency" value={<span className="mono">{fmtNum(d?.latencyMs, 0)} ms</span>} />
-            <Fact label="Decided" value={<span title={fmtDateTime(d?.decidedAt)}>{fmtAgo(d?.decidedAt)}</span>} />
-            <Fact label="Opened" value={<span title={fmtDateTime(detail.createdAt)}>{fmtAgo(detail.createdAt)}</span>} />
-          </dl>
-          <dl className="verdictcard__ids">
-            <Fact label="User" value={<a className="mono link" href={href('/cases')}>{userId}</a>} />
-            <Fact label="Transaction" value={<span className="mono">{detail.txnId ?? d?.txnId ?? DASH}</span>} />
-            <Fact label="Case" value={<span className="mono">{detail.caseId}</span>} />
-          </dl>
-          <div className="verdictcard__rules">
-            <span className="field__label">Fired rules</span>
-            <Rules rules={detail.firedRules ?? d?.firedRules} />
-          </div>
-        </div>
-        <StatusControl detail={detail} onUpdated={onUpdated} />
-      </section>
-
-      {d?.mode === 'DEGRADED' ? (
-        <p className="state state--warn">
-          Scored in <strong>DEGRADED</strong> mode: the ML scorer was unreachable or the circuit
-          breaker was open, so rules alone produced this verdict. There is no model score and no
-          SHAP attribution for this case.
+      {featured ? (
+        <p className="featured">
+          <span className="label">Featured</span> <strong>{featured.title}</strong> {featured.blurb}
         </p>
       ) : null}
 
-      <div className="detail__grid">
-        <div className="detail__col">
-          <Panel
-            title="Signals"
-            subtitle="What fired, and the evidence the engine recorded when it fired."
-          >
-            {d?.signals?.length ? (
-              <div className="signals">
-                {d.signals.map((s, i) => (
-                  <SignalCard key={`${s.code}-${i}`} signal={s} />
-                ))}
-              </div>
-            ) : (
-              <p className="state state--empty">
-                No signals on this decision — it was flagged by the model score alone, or by a hard
-                rule.
-              </p>
-            )}
-          </Panel>
-
-          <Panel
-            title="Model attribution"
-            subtitle="SHAP contributions to the log-odds of fraud, largest magnitude first."
-          >
-            <ShapChart contributions={d?.contributions ?? []} />
-          </Panel>
-
-          <Panel title="Feature vector" subtitle="Exactly what was sent to the scorer.">
-            {d?.features && Object.keys(d.features).length > 0 ? (
-              <dl className="kv kv--grid">
-                {Object.entries(d.features).map(([k, v]) => (
-                  <div className="kv__row" key={k}>
-                    <dt>{humanKey(k)}</dt>
-                    <dd className="mono num">{fmtValue(v)}</dd>
-                  </div>
-                ))}
-              </dl>
-            ) : (
-              <p className="state state--empty">No feature vector on this decision.</p>
-            )}
-          </Panel>
+      <div className="casehead">
+        <div className="casehead__top">
+          <VerdictPill verdict={detail.verdict} size="lg" />
+          <ModeTag mode={d.mode ?? 'FULL'} />
+          <Metric label="Model score" value={fmtScore(score)} big />
+          <Metric
+            label="Latency"
+            value={`${fmtNum(d.latencyMs, 0)} ms`}
+            title="From the payment's own timestamp to the verdict"
+          />
+          <Metric label="Decided" value={fmtWhen(d.decidedAt ?? detail.createdAt)} title={fmtDateTime(d.decidedAt)} />
         </div>
-
-        <div className="detail__col">
-          <Panel
-            title="Analyst report"
-            subtitle="Written by the agent from read-only tool calls. Every claim must cite the evidence behind it, and a verify node checks those citations before the report is attached."
-          >
-            {detail.reportDoc ? (
-              <AnalystReport report={detail.reportDoc} />
-            ) : (
-              <p className="state state--empty">
-                No analyst report yet. The LangGraph agent runs asynchronously after the case is
-                created and attaches a cited report when it finishes — or nothing, if it is
-                disabled or it failed.
-              </p>
-            )}
-          </Panel>
-
-          <Panel
-            title="Transaction neighbourhood"
-            subtitle={`P2P transfers around ${userId}, depth 2.`}
-            aside={
-              <button type="button" className="btn btn--small" onClick={graph.reload}>
-                Refresh
-              </button>
-            }
-          >
-            <Async
-              state={graph}
-              empty="The stream engine's graph read API returned nothing for this user."
-            >
-              {(nb) => <GraphView nb={nb} />}
-            </Async>
-          </Panel>
-
-          <Panel title="User activity" subtitle="Live state from the stream engine, last 24h.">
-            <Async state={history} empty="No history available for this user.">
-              {(h) => <History h={h} />}
-            </Async>
-          </Panel>
-
-          <Panel title="Case timeline">
-            {detail.events?.length ? (
-              <ol className="timeline">
-                {[...detail.events]
-                  .sort((a, b) => (a.at < b.at ? 1 : -1))
-                  .map((ev, i) => (
-                    <li className="timeline__item" key={`${ev.eventType}-${ev.at}-${i}`}>
-                      <div className="timeline__head">
-                        <code className="rule">{ev.eventType}</code>
-                        <span className="dim" title={fmtDateTime(ev.at)}>
-                          {fmtAgo(ev.at)}
-                        </span>
-                      </div>
-                      <EventPayload ev={ev} />
-                    </li>
-                  ))}
-              </ol>
-            ) : (
-              <p className="state state--empty">No events recorded for this case.</p>
-            )}
-          </Panel>
-        </div>
+        <dl className="casehead__facts">
+          <Fact label="Account" value={<span className="mono">{userId}</span>} />
+          {d.merchantId ? (
+            <Fact
+              label="Merchant"
+              value={
+                <>
+                  <span className="mono">{d.merchantId}</span>
+                  {merchantCategory(d.merchantCategory) ? (
+                    <span className="dim"> · {merchantCategory(d.merchantCategory)}</span>
+                  ) : null}
+                </>
+              }
+            />
+          ) : null}
+          <Fact label="Case" value={<span className="mono" title={detail.caseId}>{shortId(detail.caseId)}</span>} />
+          <Fact
+            label="Transaction"
+            value={<span className="mono" title={detail.txnId}>{shortId(detail.txnId ?? d.txnId)}</span>}
+          />
+          <Fact label="Status" value={<StatusBadge status={detail.status} />} />
+        </dl>
+        {!READ_ONLY ? <StatusControl detail={detail} onUpdated={onUpdated} /> : null}
       </div>
+
+      {d.mode === 'DEGRADED' ? (
+        <p className="state state--warn">
+          Decided in <strong>DEGRADED</strong> mode: the ML scorer was unreachable or its circuit
+          breaker was open, so the rules decided alone. There is no model score and no attribution.
+        </p>
+      ) : null}
+
+      <Section label="Why it was flagged" id="why">
+        {signals.length > 0 ? (
+          <div className="signals">
+            {signals.map((s, i) => (
+              <SignalCard key={`${s.code}-${i}`} signal={s} />
+            ))}
+          </div>
+        ) : (
+          <p className="state state--empty">
+            No rule fired on this payment.{' '}
+            {score !== null
+              ? `The model's score of ${fmtScore(score)} alone put it over the threshold.`
+              : 'No signals were recorded with the decision.'}
+          </p>
+        )}
+      </Section>
+
+      <Section
+        label="Analyst report"
+        id="report"
+        note="Written after the case opened, by an agent that can only call read-only tools. Every claim cites the evidence behind it."
+      >
+        {detail.reportDoc ? (
+          <AnalystReport report={detail.reportDoc} />
+        ) : (
+          <NoReport detail={detail} />
+        )}
+      </Section>
+
+      <Section
+        label="Model attribution"
+        id="shap"
+        note="SHAP values: how much each feature moved the model's log-odds of fraud."
+      >
+        {contributions.length > 0 ? (
+          <ShapChart contributions={contributions} />
+        ) : (
+          <p className="state state--empty">
+            {d.mode === 'DEGRADED'
+              ? 'No attribution: the model was not reachable for this decision.'
+              : score === null
+                ? hardRule
+                  ? 'No attribution: a hard rule decided before the model was consulted.'
+                  : 'No attribution: the model was not consulted for this decision.'
+                : 'No attribution: explanations are only computed when the model scores 0.4 or more.'}
+          </p>
+        )}
+      </Section>
+
+      <Section
+        label="Transaction network"
+        id="graph"
+        note={`Peer-to-peer transfers around ${userId}, two hops out, from the engine's in-memory graph.`}
+      >
+        <Async
+          state={graph}
+          empty="The engine returned no neighbourhood for this account."
+          missing="The network around this account was not recorded in this replay."
+        >
+          {(nb) => <GraphView nb={nb} cycles={ringCycles} />}
+        </Async>
+      </Section>
+
+      <Section label="Account activity" id="activity" note={REPLAY ? 'As recorded, last 24 hours.' : 'Live state from the stream engine, last 24 hours.'}>
+        <Async
+          state={history}
+          empty="No history for this account."
+          missing="This account's activity was not recorded in this replay."
+        >
+          {(h) => <History h={h} />}
+        </Async>
+      </Section>
+
+      <Section label="Feature vector" id="features" note="Exactly what the engine sent to the model.">
+        {d.features && Object.keys(d.features).length > 0 ? (
+          <dl className="kv kv--grid">
+            {Object.entries(d.features).map(([k, v]) => (
+              <div className="kv__row" key={k}>
+                <dt title={k}>{featureLabel(k)}</dt>
+                <dd className="mono num">{featureValue(k, v)}</dd>
+              </div>
+            ))}
+          </dl>
+        ) : (
+          <p className="state state--empty">No feature vector on this decision.</p>
+        )}
+      </Section>
+
+      <Section label="Case timeline" id="timeline">
+        <Timeline detail={detail} />
+      </Section>
     </>
+  );
+}
+
+function NoReport({ detail }: { detail: Detail }) {
+  const age = Date.now() - parseTime(detail.createdAt);
+  if (!REPLAY && age >= 0 && age < REPORT_WAIT_MS) {
+    return (
+      <p className="state state--pending" role="status">
+        The analyst is investigating this case. Its report appears here when it finishes, usually
+        within a minute; this panel checks every few seconds.
+      </p>
+    );
+  }
+  return (
+    <p className="state state--empty">
+      No analyst report on this case. The agent runs after a case opens and attaches a report when it
+      finishes; for this one it was disabled, still queued, or failed.
+    </p>
+  );
+}
+
+function Metric({ label, value, title, big }: { label: string; value: string; title?: string; big?: boolean }) {
+  return (
+    <span className="metric" title={title}>
+      <span className="label">{label}</span>
+      <span className={big ? 'metric__value metric__value--big mono' : 'metric__value mono'}>{value}</span>
+    </span>
   );
 }
 
 function Fact({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="fact">
-      <dt className="field__label">{label}</dt>
+      <dt className="label">{label}</dt>
       <dd>{value}</dd>
     </div>
   );
 }
 
-function StatusControl({
-  detail,
-  onUpdated,
-}: {
-  detail: Detail;
-  onUpdated: (d: Detail) => void;
-}) {
+function featureValue(key: string, v: unknown): string {
+  if (v === null || v === undefined) return DASH;
+  if (typeof v === 'boolean') return v ? 'yes' : 'no';
+  if (typeof v !== 'number') return String(v);
+  switch (featureKey(key)) {
+    case 'sum1h':
+      return fmtMoney0(v);
+    case 'geoSpeedKmh':
+      return `${fmtNum(v, 0)} km/h`;
+    case 'secsSinceLast':
+    case 'secsSinceInbound':
+      return fmtSecs(v);
+    case 'passThroughRatio':
+      return fmtPct(v, 1);
+    case 'amtZ':
+      return `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(2)}`;
+    default:
+      return fmtNum(v, 2);
+  }
+}
+
+function StatusControl({ detail, onUpdated }: { detail: Detail; onUpdated: (d: Detail) => void }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -236,7 +345,7 @@ function StatusControl({
     setSaving(true);
     setError(null);
     try {
-      onUpdated(await api.setStatus(detail.caseId, status));
+      onUpdated(await source.setStatus(detail.caseId, status));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not update the status.');
     } finally {
@@ -246,37 +355,130 @@ function StatusControl({
 
   return (
     <div className="statuscontrol">
-      <span className="field__label">Status</span>
-      <StatusBadge status={detail.status} />
-      <select
-        className="select"
-        value={detail.status}
-        disabled={saving}
-        onChange={(e) => void change(e.target.value as CaseStatus)}
-        aria-label="Change case status"
-      >
-        {CASE_STATUSES.map((s) => (
-          <option key={s} value={s}>
-            {titleCase(s)}
-          </option>
-        ))}
-      </select>
-      {saving ? <span className="dim">Saving…</span> : null}
+      <label className="field">
+        <span className="label">Set status</span>
+        <select
+          className="select"
+          value={detail.status}
+          disabled={saving}
+          onChange={(e) => void change(e.target.value as CaseStatus)}
+        >
+          {CASE_STATUSES.map((s) => (
+            <option key={s} value={s}>
+              {titleCase(s)}
+            </option>
+          ))}
+        </select>
+      </label>
+      {saving ? <span className="dim small">Saving…</span> : null}
       {error ? (
         <span className="state state--error state--inline" role="alert">
           {error}
         </span>
       ) : null}
-      <span className="dim small">Updated {fmtAgo(detail.updatedAt)}</span>
     </div>
   );
 }
 
+function History({ h }: { h: UserHistory }) {
+  const w = h.windows;
+  return (
+    <>
+      <dl className="activity">
+        <div className="activity__cell">
+          <dt className="label">Usual payment</dt>
+          <dd>
+            {h.profile ? (
+              <>
+                <span className="mono">{fmtMoney0(h.profile.mean)}</span>{' '}
+                <span className="dim">
+                  ± <span className="mono">{fmtMoney0(h.profile.std)}</span> over{' '}
+                  <span className="mono">{fmtNum(h.profile.n, 0)}</span> payments
+                </span>
+              </>
+            ) : (
+              <span className="dim">unavailable</span>
+            )}
+          </dd>
+        </div>
+        {(
+          [
+            ['Last minute', w?.cnt1m, w?.sum1m],
+            ['Last 5 min', w?.cnt5m, w?.sum5m],
+            ['Last hour', w?.cnt1h, w?.sum1h],
+          ] as const
+        ).map(([label, cnt, sum]) => (
+          <div className="activity__cell" key={label}>
+            <dt className="label">{label}</dt>
+            <dd>
+              {w ? (
+                <>
+                  <span className="mono">{fmtNum(cnt, 0)}</span>
+                  <span className="dim"> payment{cnt === 1 ? '' : 's'} · </span>
+                  <span className="mono">{fmtMoney0(sum)}</span>
+                </>
+              ) : (
+                <span className="dim">unavailable</span>
+              )}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      {!h.profile && !h.windows ? (
+        <p className="state state--warn">
+          The stream engine&rsquo;s read API did not answer, so the live profile and window counts are
+          missing.
+        </p>
+      ) : null}
+      {h.recent?.length ? (
+        <>
+          <p className="label activity__h">Recent decisions for this account</p>
+          <ul className="minifeed">
+            {h.recent.slice(0, 10).map((r) => (
+              <li key={r.txnId} className={`minifeed__row minifeed__row--${String(r.verdict).toLowerCase()}`}>
+                <span className="mono dim" title={fmtClockMs(r.decidedAt)}>
+                  {fmtWhen(r.decidedAt)}
+                </span>
+                <VerdictPill verdict={r.verdict} />
+                <span className="mono num">{fmtScore(r.mlScore)}</span>
+                <span className="minifeed__rules">
+                  <RuleWords rules={r.firedRules} />
+                </span>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : (
+        <p className="state state--empty">No decisions for this account in the last 24 hours.</p>
+      )}
+    </>
+  );
+}
+
+function Timeline({ detail }: { detail: Detail }) {
+  if (!detail.events?.length) return <p className="state state--empty">No events recorded for this case.</p>;
+  return (
+    <ol className="timeline">
+      {[...detail.events]
+        .sort((a, b) => (a.at < b.at ? 1 : -1))
+        .map((ev, i) => (
+          <li className="timeline__item" key={`${ev.eventType}-${ev.at}-${i}`}>
+            <div className="timeline__head">
+              <code className="rule">{ev.eventType}</code>
+              <span className="dim mono" title={fmtDateTime(ev.at)}>
+                {fmtWhen(ev.at)}
+              </span>
+            </div>
+            <EventPayload ev={ev} />
+          </li>
+        ))}
+    </ol>
+  );
+}
+
 /**
- * Event payloads in the timeline. Most are small flat objects and read fine as
- * a key/value list, but REPORT_ATTACHED carries the entire report document —
- * dumping that inline would drown the timeline and duplicate the report panel,
- * so it collapses to the one line that tells the reader what happened.
+ * Event payloads in the timeline. REPORT_ATTACHED carries the entire report,
+ * so it collapses to the one line that says what happened.
  */
 function EventPayload({ ev }: { ev: Detail['events'][number] }) {
   const payload = ev.payload;
@@ -297,17 +499,11 @@ function EventPayload({ ev }: { ev: Detail['events'][number] }) {
                 : 'timeline__verify'
           }
         >
-          {passed === true
-            ? 'citations verified'
-            : passed === false
-              ? 'verification failed'
-              : 'verification unknown'}
+          {passed === true ? 'citations verified' : passed === false ? 'verification failed' : 'verification unknown'}
         </span>
         <span className="dim">
           {' · '}
-          {r.findings.length} claim{r.findings.length === 1 ? '' : 's'}
-          {' · '}
-          {r.evidence.length} evidence
+          {r.findings.length} claim{r.findings.length === 1 ? '' : 's'} · {r.evidence.length} evidence
         </span>
       </p>
     );
@@ -323,62 +519,10 @@ function EventPayload({ ev }: { ev: Detail['events'][number] }) {
     <dl className="kv kv--compact">
       {Object.entries(payload).map(([k, v]) => (
         <div className="kv__row" key={k}>
-          <dt>{humanKey(k)}</dt>
+          <dt>{k.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()}</dt>
           <dd className="mono">{fmtValue(v)}</dd>
         </div>
       ))}
     </dl>
-  );
-}
-
-function History({ h }: { h: UserHistory }) {
-  return (
-    <>
-      <dl className="kv kv--grid">
-        <div className="kv__row">
-          <dt>amount profile</dt>
-          <dd className="mono num">
-            {h.profile
-              ? `n=${fmtNum(h.profile.n, 0)} · mean ${fmtMoney(h.profile.mean)} · sd ${fmtMoney(h.profile.std)}`
-              : 'unavailable'}
-          </dd>
-        </div>
-        <div className="kv__row">
-          <dt>1m / 5m / 1h count</dt>
-          <dd className="mono num">
-            {h.windows
-              ? `${fmtNum(h.windows.cnt1m, 0)} / ${fmtNum(h.windows.cnt5m, 0)} / ${fmtNum(h.windows.cnt1h, 0)}`
-              : 'unavailable'}
-          </dd>
-        </div>
-        <div className="kv__row">
-          <dt>1m / 5m / 1h sum</dt>
-          <dd className="mono num">
-            {h.windows
-              ? `${fmtMoney(h.windows.sum1m)} / ${fmtMoney(h.windows.sum5m)} / ${fmtMoney(h.windows.sum1h)}`
-              : 'unavailable'}
-          </dd>
-        </div>
-      </dl>
-      {!h.profile && !h.windows ? (
-        <p className="state state--warn">
-          The stream engine read API is unreachable, so live profile and window state are missing.
-        </p>
-      ) : null}
-      {h.recent?.length ? (
-        <ul className="minifeed">
-          {h.recent.slice(0, 12).map((r) => (
-            <li key={r.txnId} className={`minifeed__row minifeed__row--${r.verdict.toLowerCase()}`}>
-              <span className="mono dim">{fmtAgo(r.decidedAt)}</span>
-              <VerdictPill verdict={r.verdict} />
-              <span className="mono num">{fmtScore(r.mlScore)}</span>
-              <Rules rules={r.firedRules} />
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="state state--empty">No recent decisions for this user.</p>
-      )}
-    </>
   );
 }

@@ -253,6 +253,19 @@ export function normalizeReport(raw: ReportDoc | null | undefined): NormReport |
   };
 }
 
+/**
+ * The same evidence and citation handling, for anything that is not a report
+ * (the chat's answers carry their own evidence array and refs).
+ */
+export function normalizeEvidenceList(raw: unknown): NormEvidence[] {
+  return arr(raw).map(normEvidence);
+}
+
+export function resolveCitations(refs: unknown, evidence: NormEvidence[]): NormCitation[] {
+  const byIndex = buildIndex(evidence);
+  return arr(refs).map((r) => normCitation(r, byIndex));
+}
+
 /** Pretty-printed JSON for the evidence blocks. Never throws, never returns ''. */
 export function prettyJson(v: unknown): string {
   if (v === undefined) return 'undefined';

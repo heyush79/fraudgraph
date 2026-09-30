@@ -1,64 +1,99 @@
-# FraudGraph dashboard
+# FraudGraph console
 
-A thin React window into the case service. No SSR, no auth, no state library — the
-backend owns the truth, this renders it.
+The public face of FraudGraph: one screen with the live decision feed, the
+selected case under investigation, and an "Ask the analyst" chat about that
+case. No SSR, no auth, no state library. The backend owns the truth, this
+renders it.
 
 ```
 npm install
-npm run dev       # http://localhost:5173, proxies the API to :8082
-npm run build     # type-check + production bundle into dist/
-npm run preview   # serve the built bundle (no API proxy — see below)
+npm run dev             # http://localhost:5173, proxies to the running stack
+npm run build           # type-check + live-mode bundle into dist/
+npm run build:replay    # the same app over static replay files (read-only)
+npm run snapshot:sample # write a small replay sample from the running stack
 ```
 
-The dev server proxies `/cases`, `/stats`, `/internal` and `/ws` (with
-`ws: true`) to `http://localhost:8082`, so the app is same-origin in dev exactly
-as it is in production. Start the case service first; every view degrades to a
-readable error if it is down.
+## Two data modes
 
-To point a dev build at a case service somewhere else, set `VITE_API_BASE`
-(see `.env.example`). Unset — the default — means same-origin, which is what the
-nginx image relies on.
+Chosen at build time by `VITE_DATA_MODE` (`docs/showcase-contract.md` is the
+contract for both). Views never know which one they have: everything they read
+goes through the `DataSource` interface in `src/data/source.ts`.
 
-## Views
+| Mode | Data from | Built by |
+|---|---|---|
+| `live` (default) | case service over HTTP + `WS /ws/feed`, analyst agent under `/agent` | `npm run build`, the Dockerfile |
+| `replay` | static JSON under `<base>/showcase/`, no backend | `npm run build:replay` |
+
+The replay is a recording of the real pipeline, played back at its original
+timing and looped; the header's `REPLAY` badge and the intro strip say so.
+Throughput and p50/p99 in the header are computed in the browser from the
+ticks' `latencyMs` in both modes, so they mean the same thing either way.
+
+`VITE_READ_ONLY=true` hides the case status control; `build:replay` always sets
+it, and any public live deployment should (`--build-arg VITE_READ_ONLY=true`).
+
+GitHub Pages serves the replay from `/fraudgraph/`, so the base path comes from
+the environment and every replay fetch is relative to it:
+
+```
+VITE_BASE=/fraudgraph/ npm run build:replay
+VITE_BASE=/fraudgraph/ npx vite preview --outDir dist   # check it locally
+```
+
+### Replay data
+
+`public/showcase/` holds the files, in the format of contract §3. The real
+recording is written there by the project's recorder. Until then,
+`scripts/snapshot-sample.mjs` (plain Node 22+, no dependencies, GETs and one
+WebSocket read only) writes a small development sample from a running stack:
+60 s of the real feed, six real cases with their history and graph, and ask
+files built from templates, not model answers. Its manifest says
+`"sample": true` and the badge reads `REPLAY · SAMPLE`.
+
+## Routes
+
+Hash routes, so the build needs no server configuration under any sub-path.
 
 | Route | What it shows |
 |---|---|
-| `#/live` | **Live feed.** Every decision the engine emits, over `WS /ws/feed`, newest first, 200 rows kept in memory. Colour-coded by verdict, with time, user, verdict, mode, model score, fired rules and end-to-end latency. Rows that carry a `caseId` are clickable and open the case. Filter chips (all / flagged / per verdict), plus pause and clear — the ticker moves fast during a demo. |
-| `#/cases` | **Cases table.** Filter by status, 50 per page, `total` from the API drives the pager. Click a row for the detail. |
-| `#/cases/{caseId}` | **Case detail.** See below. |
+| `#/` | The console. Nothing selected: the first featured case (replay) or the latest case with an analyst report (live). |
+| `#/case/{id}` | The console with that case selected. `#/cases/{id}` and `#/live` from the old dashboard still resolve. |
+| `#/cases` | Every case, filterable by status, 50 a page. |
+| `#/about` | What the system is, a hand-drawn architecture diagram, key numbers, links. |
 
-The header carries `/stats` (polled every 10s): the per-status case counts — each
-one a link into the filtered table — and the last-hour case / block / review
-counts. The connection pill reflects the real socket state (`Live` /
-`Connecting` / `Disconnected`, with the retry count); clicking it forces an
-immediate reconnect.
+## The console
 
-### Case detail
+- **Decision feed** (left). Every decision, newest first, 200 kept; the Flagged
+  filter keeps its own 200 flagged decisions. New rows slide in, flagged ones
+  flash their verdict colour once, and nothing else in the app moves
+  (`prefers-reduced-motion` switches it off). A flagged row opens its case.
+- **Case investigation** (centre). Verdict, mode, model score; the fired
+  signals in words ("19 payments in 60 seconds, limit 8"); the analyst's report
+  with citation chips that open the cited evidence, with the numbers the claim
+  quotes marked inside it; SHAP attribution; the account's P2P neighbourhood
+  (inline SVG, cycle edges red, pass-through edges amber); recent activity; the
+  feature vector; the case timeline. A case whose report has not arrived yet is
+  re-read every 5 s for ten minutes.
+- **Ask the analyst** (right; a drawer below 1100 px). Suggested questions from
+  the fired rules, free text in live mode, answers sentence by sentence with
+  citation chips, a collapsed disclosure of anything the verifier removed and
+  why, the steps the agent took, and the model and latency. History is kept per
+  case while the page is open. 404, 429 (with `Retry-After`) and 503 each get
+  their own message; if `/agent/health` is down the input is disabled with one
+  line of explanation and the rest of the page works. In replay, exactly the
+  recorded questions are offered and free text is disabled.
 
-- **Verdict card** — verdict, mode, model score, decision latency, ids, fired
-  rules, and the status control (a `PATCH /cases/{id}/status` per change, with
-  its own saving and error state).
-- **Signals** — each signal's evidence rendered as a sentence rather than a JSON
-  blob: a velocity signal reads "18 transactions in 60s — the limit is 8 (2.3×
-  over)"; a geo signal states distance, gap and the implied speed against the
-  ceiling; a ring signal draws the cycle as a chain of user ids. An unknown
-  signal code falls back to a key/value table, so the engine can add rules
-  without this file changing first.
-- **Model attribution** — SHAP contributions as signed horizontal bars around a
-  zero axis. Right and red pushed the model toward fraud, left and green pulled
-  it away; every bar is directly labelled so colour is never the only cue.
-- **Feature vector** — exactly what went to the scorer.
-- **Analyst report** — renders the agent's summary, fraud type, confidence and
-  cited findings. Until Phase 5 lands, `reportDoc` is null and the panel says so.
-- **Transaction neighbourhood** — `GET /internal/graph/{userId}/neighborhood?depth=2`
-  drawn as a hand-authored inline SVG: radial BFS layout, the case's user at the
-  centre, degree inside each node, direction arrows, amount on each edge (hover
-  for amount and time). No graph library — these neighbourhoods are a handful of
-  nodes.
-- **User activity** — `GET /internal/users/{userId}/history?hours=24`: the rolling
-  amount profile, the 1m/5m/1h window counts and sums, and the last few
-  decisions. `profile` and `windows` are null when the engine read API is
-  unreachable; the panel says that explicitly instead of showing zeroes.
+For working on the chat without spending a model quota, add `?fixture` to the
+URL in `npm run dev` (before the `#`): answers are then built from the real case
+by `src/data/askFixture.js` and labelled `DEV FIXTURE`. Production bundles do
+not contain the fixture.
+
+## Layout
+
+At 1100 px and wider the three panes sit side by side, each scrolling on its
+own. From 700 to 1099 px the chat becomes a slide-over drawer. Below 700 px
+everything stacks and the page scrolls; tested at 400 px with no horizontal
+scroll.
 
 ## Dependencies
 
@@ -66,45 +101,50 @@ immediate reconnect.
 |---|---|
 | `react`, `react-dom` | the whole runtime |
 | `vite`, `@vitejs/plugin-react` | dev server + build |
-| `typescript`, `@types/react`, `@types/react-dom` | the API contract is written down in `src/lib/types.ts`; the backend is being built in parallel, so a compile-time check on the shape is worth the dev dependency |
+| `typescript`, `@types/react`, `@types/react-dom` | the contract is written down in `src/lib/types.ts` and checked at compile time |
 
-Nothing else. Routing is a ~30-line hash router (`src/lib/useHashRoute.ts`) rather
-than `react-router-dom`; both charts are hand-written (CSS bars and inline SVG)
-rather than a chart or graph library.
+Nothing else. The router is ~40 lines (`src/lib/useHashRoute.ts`); the two
+shared stores (`src/lib/feedStore.ts`, `src/lib/chatStore.ts`) use React's own
+`useSyncExternalStore`; the graph, the SHAP bars and the architecture diagram
+are hand-written SVG and CSS.
 
 ## Conventions
 
-- Colour, type and spacing are custom properties defined once on `:root` in
-  `src/styles/tokens.css`, with a single `prefers-color-scheme: dark` block that
-  re-points the same names. No component stylesheet has a colour media query.
-- IBM Plex Sans for text, IBM Plex Mono for ids, codes and numbers, both from
-  Google Fonts with real fallback stacks. Numeric columns use `tabular-nums`.
-- Every view handles loading, error and empty separately — `Async` in
-  `src/components/Bits.tsx` is the one place that decides which to show, and a
-  failed refresh keeps the last good data on screen with a warning rather than
-  blanking the page.
-- Works down to phone width: the ticker reflows into a card per decision, the
-  cases table scrolls horizontally, the detail collapses to one column.
+- Colours are tokens in `src/styles/tokens.css`: dark is the base design, light
+  re-points the same names, `data-theme` on `<html>` overrides
+  `prefers-color-scheme` once the viewer picks one (stored in `localStorage`,
+  every access wrapped so a blocked store only loses the preference). No
+  component names a literal colour.
+- Verdict colour is semantic and always travels with the word.
+- IBM Plex Sans for text, IBM Plex Mono for ids, amounts, scores, codes and
+  every number in a column (tabular figures), Bricolage Grotesque for the
+  product name and the About headings.
+- Every panel handles loading, error, empty and (in replay) not-recorded
+  separately; a failed refresh keeps the last good data on screen.
 
 ## Production
 
 ```bash
-docker build -t fraudgraph-dashboard .
+docker build -t fraudgraph-dashboard .                                   # live mode
+docker build --build-arg VITE_READ_ONLY=true -t fraudgraph-dashboard .   # public live
 docker run --rm -p 8080:80 fraudgraph-dashboard
 ```
 
-Multi-stage: `node:22-alpine` runs `npm ci && npm run build`, then
-`nginx:1.27-alpine` serves `dist/` on port 80 with a history fallback, and
-proxies `/cases`, `/stats`, `/internal` and `/ws` to `http://case-service:8082`
-— `/ws` with the `Upgrade`/`Connection` headers and a long read timeout, since a
-quiet feed must not be torn down. It therefore needs to run on the same Docker
-network as the case service, with that service name.
+nginx serves `dist/` and proxies `/cases`, `/stats`, `/internal` and `/ws` to
+`case-service:8082` (`/ws` with the upgrade headers and a long read timeout) and
+`/agent/*` to `analyst-agent:8000/*` with the prefix stripped. The agent's
+address is resolved per request, so the image still starts in a deployment
+without the agent; the chat then says the analyst is unreachable.
 
 ## Assumptions about the contract
 
-- Ticks inside one `/ws/feed` batch are assumed chronological; the feed reverses
-  a batch so the newest ends up on top. A non-array frame is tolerated as a
-  single tick.
-- `firedRules` and `signals` may be absent or empty on any decision; every
-  numeric field is treated as possibly null.
-- Amounts are formatted as INR, matching the generator.
+- Ticks inside one `/ws/feed` batch are chronological; the first frame after a
+  connect is the server's backfill (drawn without animation, and excluded from
+  throughput when it is older than 15 s). Ticks are de-duplicated by `txnId`,
+  since every reconnect re-sends the backfill.
+- Replay: `cases.json` doubles as the index of which `cases/{id}.json` files
+  exist, so unrecorded cases are shown but never fetched.
+- A 404 from the ask endpoint is checked against the case service: if the case
+  exists, the deployed agent predates the endpoint and the chat says so rather
+  than claiming the case is gone.
+- Amounts are rupees, formatted `en-IN`.

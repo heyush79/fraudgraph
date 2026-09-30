@@ -3,12 +3,27 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="light dark" />
-    <title>FraudGraph</title>
+    <meta name="color-scheme" content="dark light" />
+    <meta
+      name="description"
+      content="FraudGraph: real-time payment fraud detection. Every payment gets ALLOW, REVIEW or BLOCK in about 15 ms, and an AI analyst investigates each flagged case with every claim checked against its evidence."
+    />
+    <title>FraudGraph console</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Crect width='20' height='20' rx='4' fill='%230b1117'/%3E%3Cpath d='M10 4.2 15.4 14H4.6Z' fill='none' stroke='%2334465a' stroke-width='1.4'/%3E%3Ccircle cx='10' cy='4.2' r='2.2' fill='%234fb8c0'/%3E%3Ccircle cx='15.4' cy='14' r='2.2' fill='%234fb8c0'/%3E%3Ccircle cx='4.6' cy='14' r='2.2' fill='%23e5534b'/%3E%3C/svg%3E"
+    />
+    <script>
+      // Apply a stored theme choice before first paint (lib/prefs.ts owns it after that).
+      try {
+        var t = localStorage.getItem('fraudgraph.theme');
+        if (t === 'dark' || t === 'light') document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
   </head>

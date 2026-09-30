@@ -1,38 +1,38 @@
+import { useEffect } from 'react';
+import { source } from './data';
+import { feedStore } from './lib/feedStore';
 import { useHashRoute } from './lib/useHashRoute';
-import { useLiveFeed } from './lib/useLiveFeed';
 import { Header } from './components/Header';
-import { LiveFeed } from './views/LiveFeed';
+import { About } from './views/About';
 import { CasesTable } from './views/CasesTable';
-import { CaseDetail } from './views/CaseDetail';
+import { Console } from './views/Console';
 
 export default function App() {
   const route = useHashRoute();
-  // The socket lives here, not in the view, so the buffer survives navigation.
-  const feed = useLiveFeed(200);
+
+  // The feed lives for the whole page, not a view, so the ticker and the
+  // header's numbers survive a visit to About or the cases table.
+  useEffect(() => feedStore.start(source), []);
+
+  useEffect(() => {
+    if (route.name !== 'console') window.scrollTo(0, 0);
+  }, [route.name]);
 
   return (
-    <div className="app">
-      <Header
-        route={route.path}
-        conn={feed.state}
-        attempt={feed.attempt}
-        onReconnect={feed.reconnectNow}
-      />
-      <main className="main">{view(route, feed)}</main>
-      <footer className="foot">
-        <span>
-          FraudGraph dashboard — a window into the case service. Verdicts are produced by the
-          stream engine; <code className="rule">DEGRADED</code> means the ML scorer was
-          unreachable and rules decided alone.
-        </span>
-      </footer>
+    <div className={`app app--${route.name}`}>
+      <a className="skip" href="#main">
+        Skip to content
+      </a>
+      <Header route={route.name} />
+      <main className="main" id="main">
+        {route.name === 'console' ? (
+          <Console caseId={route.caseId} />
+        ) : route.name === 'cases' ? (
+          <CasesTable query={route.query} />
+        ) : (
+          <About />
+        )}
+      </main>
     </div>
   );
-}
-
-function view(route: ReturnType<typeof useHashRoute>, feed: ReturnType<typeof useLiveFeed>) {
-  const [head, id] = route.segments;
-  if (head === 'cases' && id) return <CaseDetail caseId={id} />;
-  if (head === 'cases') return <CasesTable query={route.query} />;
-  return <LiveFeed feed={feed} />;
 }

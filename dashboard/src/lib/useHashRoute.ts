@@ -1,26 +1,32 @@
 import { useEffect, useState } from 'react';
 
 /**
- * A ~30-line hash router instead of react-router-dom. The app has three routes
- * and the LLD asks for a thin dashboard; a dependency would cost more than it
- * saves. Hash routing also means no server-side route config is required.
+ * A small hash router instead of react-router-dom. Hash routing needs no server
+ * configuration, which is what lets the same build run behind nginx and on
+ * GitHub Pages under /fraudgraph/: only the part after `#` ever changes.
  *
- * Routes: #/live | #/cases?status=&offset= | #/cases/{caseId}
+ *   #/             the console (a default case is chosen)
+ *   #/case/{id}    the console with that case selected
+ *   #/cases        the cases table (?status=&offset=)
+ *   #/about        what this is
+ *
+ * The routes of the previous dashboard (#/live, #/cases/{id}) still resolve.
  */
-export interface Route {
-  path: string;
-  segments: string[];
-  query: URLSearchParams;
-}
+export type Route =
+  | { name: 'console'; caseId: string | null }
+  | { name: 'cases'; query: URLSearchParams }
+  | { name: 'about' };
 
 function read(): Route {
-  const raw = window.location.hash.replace(/^#/, '') || '/live';
+  const raw = window.location.hash.replace(/^#/, '');
   const [path, search] = raw.split('?');
-  return {
-    path,
-    segments: path.split('/').filter(Boolean),
-    query: new URLSearchParams(search ?? ''),
-  };
+  const seg = path.split('/').filter(Boolean);
+  if ((seg[0] === 'case' || seg[0] === 'cases') && seg[1]) {
+    return { name: 'console', caseId: decodeURIComponent(seg[1]) };
+  }
+  if (seg[0] === 'cases') return { name: 'cases', query: new URLSearchParams(search ?? '') };
+  if (seg[0] === 'about') return { name: 'about' };
+  return { name: 'console', caseId: null };
 }
 
 export function useHashRoute(): Route {
@@ -28,7 +34,6 @@ export function useHashRoute(): Route {
   useEffect(() => {
     const onChange = () => setRoute(read());
     window.addEventListener('hashchange', onChange);
-    if (!window.location.hash) window.location.replace('#/live');
     return () => window.removeEventListener('hashchange', onChange);
   }, []);
   return route;
@@ -40,4 +45,8 @@ export function navigate(to: string): void {
 
 export function href(to: string): string {
   return `#${to}`;
+}
+
+export function caseHref(caseId: string): string {
+  return `#/case/${encodeURIComponent(caseId)}`;
 }

@@ -1,161 +1,197 @@
-import { useMemo, useState } from 'react';
-import type { FeedTick, Verdict } from '../lib/types';
-import type { LiveFeed as Feed } from '../lib/useLiveFeed';
-import { fmtClock, fmtNum, fmtScore } from '../lib/format';
-import { navigate, href } from '../lib/useHashRoute';
-import { ModeTag, Panel, Rules, VerdictPill } from '../components/Bits';
+import { memo, useState } from 'react';
+import { source } from '../data';
+import { feedStore, usePulse, useTicker, type Ticker, type TickRow } from '../lib/feedStore';
+import { fmtClock, fmtClockMs, fmtInt, fmtScore } from '../lib/format';
+import { useOpenableCases } from '../lib/hooks';
+import { ruleFamilies } from '../lib/signals';
+import { caseHref } from '../lib/useHashRoute';
+import { VerdictPill } from '../components/Bits';
 
-type Filter = 'ALL' | 'FLAGGED' | Verdict;
-const FILTERS: { key: Filter; label: string }[] = [
-  { key: 'ALL', label: 'All' },
-  { key: 'FLAGGED', label: 'Flagged' },
-  { key: 'BLOCK', label: 'Block' },
-  { key: 'REVIEW', label: 'Review' },
-  { key: 'ALLOW', label: 'Allow' },
-];
+const REPLAY = source.mode === 'replay';
+/** Only rows younger than this animate when they mount, so a filter switch never replays the flashes. */
+const ANIMATE_WINDOW_MS = 1_200;
 
-export function LiveFeed({ feed }: { feed: Feed }) {
+type Filter = 'ALL' | 'FLAGGED';
+
+/**
+ * The left pane: every decision as the engine makes it, newest first. The
+ * list is capped at 200 rows; the flagged filter keeps its own 200, so it is
+ * not the 2% of the last 200 that happened to be flagged.
+ */
+export function LiveFeed({ selectedCaseId }: { selectedCaseId: string | null }) {
+  const live = useTicker();
+  const pulse = usePulse();
+  const openable = useOpenableCases();
   const [filter, setFilter] = useState<Filter>('ALL');
-  const [paused, setPaused] = useState(false);
-  const [frozen, setFrozen] = useState<FeedTick[]>([]);
+  const [frozen, setFrozen] = useState<Ticker | null>(null);
 
-  const source = paused ? frozen : feed.ticks;
-  const rows = useMemo(
-    () =>
-      source.filter((t) => {
-        if (filter === 'ALL') return true;
-        if (filter === 'FLAGGED') return t.verdict !== 'ALLOW';
-        return t.verdict === filter;
-      }),
-    [source, filter],
-  );
+  const view = frozen ?? live;
+  const rows = filter === 'ALL' ? view.all : view.flagged;
+  const behind = frozen ? live.received - frozen.received : 0;
+  const now = performance.now();
 
-  const togglePause = () => {
-    if (!paused) setFrozen(feed.ticks);
-    setPaused((p) => !p);
-  };
+  const canOpen = (t: TickRow) =>
+    Boolean(t.caseId) && t.verdict !== 'ALLOW' && (openable === null || (openable?.has(t.caseId!) ?? false));
 
   return (
-    <Panel
-      title="Live decisions"
-      subtitle={
-        <>
-          Every verdict the engine emits, newest first, last 200 held in memory
-          {feed.received > 0 ? <> · {fmtNum(feed.received, 0)} seen this session</> : null}.
-        </>
-      }
-      aside={
-        <div className="toolbar">
-          <div className="chips" role="group" aria-label="Filter by verdict">
-            {FILTERS.map((f) => (
-              <button
-                key={f.key}
-                type="button"
-                className={`chip ${filter === f.key ? 'is-active' : ''}`}
-                onClick={() => setFilter(f.key)}
-              >
-                {f.label}
-              </button>
-            ))}
-          </div>
-          <button type="button" className="btn btn--small" onClick={togglePause}>
-            {paused ? 'Resume' : 'Pause'}
+    <section className="pane pane--feed" aria-label="Decision feed">
+      <header className="pane__head">
+        <h2 className="label">Decision feed</h2>
+        <div className="seg" role="group" aria-label="Show">
+          <button type="button" className="seg__btn" aria-pressed={filter === 'ALL'} onClick={() => setFilter('ALL')}>
+            All
           </button>
-          <button type="button" className="btn btn--small" onClick={feed.clear} disabled={paused}>
-            Clear
+          <button
+            type="button"
+            className="seg__btn"
+            aria-pressed={filter === 'FLAGGED'}
+            onClick={() => setFilter('FLAGGED')}
+          >
+            Flagged <span className="mono">{fmtInt(view.flagged.length)}</span>
           </button>
         </div>
-      }
-    >
-      {feed.lastError && feed.state !== 'open' ? (
-        <p className="state state--warn" role="status">
-          {feed.lastError}
+        <button
+          type="button"
+          className="btn btn--ghost btn--small"
+          onClick={() => setFrozen(frozen ? null : live)}
+          aria-pressed={Boolean(frozen)}
+          title={frozen ? 'Resume the feed' : 'Freeze the feed to read it'}
+        >
+          {frozen ? 'Resume' : 'Pause'}
+        </button>
+      </header>
+      <p className="feed__hint">
+        {frozen ? (
+          <>
+            Paused. <span className="mono">{fmtInt(behind)}</span> newer decision{behind === 1 ? '' : 's'} waiting.
+          </>
+        ) : (
+          <>Every payment as the engine decides it. Click a flagged one to investigate.</>
+        )}
+      </p>
+
+      <div className="pane__body feed">
+        {rows.length === 0 ? (
+          <p className="state state--empty">{emptyText(filter, pulse.conn, pulse.error, live.all.length)}</p>
+        ) : (
+          <>
+            <div className="tick tick--head" aria-hidden="true">
+              <span>Time</span>
+              <span>Account</span>
+              <span>Verdict</span>
+              <span className="num">Score</span>
+              <span>Signals</span>
+              <span className="num">Latency</span>
+            </div>
+            <ul className="ticks">
+              {rows.map((t) => (
+                <Row
+                  key={t.key}
+                  t={t}
+                  animate={t.animate && now - t.arrivedAt < ANIMATE_WINDOW_MS}
+                  selected={t.caseId !== null && t.caseId === selectedCaseId}
+                  openable={canOpen(t)}
+                />
+              ))}
+            </ul>
+          </>
+        )}
+      </div>
+      {pulse.conn === 'closed' && !REPLAY ? (
+        <p className="feed__status" role="status">
+          Disconnected from the decision stream{pulse.attempt ? `, retry ${pulse.attempt}` : ''}.{' '}
+          <button type="button" className="linkbtn" onClick={() => feedStore.retry()}>
+            Reconnect now
+          </button>
         </p>
       ) : null}
-
-      {rows.length === 0 ? (
-        <p className="state state--empty">
-          {feed.state === 'open'
-            ? source.length === 0
-              ? 'Connected. Waiting for the first decision — start the generator with `make demo`.'
-              : 'No decisions match this filter yet.'
-            : feed.state === 'connecting'
-              ? 'Connecting to /ws/feed…'
-              : 'Not connected to /ws/feed. Retrying automatically — is the case service up on :8082?'}
-        </p>
-      ) : (
-        <ul className="feed" aria-live="off">
-          <li className="feed__row feed__row--head" aria-hidden="true">
-            <span>Time</span>
-            <span>User</span>
-            <span>Verdict</span>
-            <span>Mode</span>
-            <span className="num">Score</span>
-            <span>Fired rules</span>
-            <span className="num">Latency</span>
-          </li>
-          {rows.map((t) => (
-            <Row key={t.txnId} tick={t} />
-          ))}
-        </ul>
-      )}
-    </Panel>
+    </section>
   );
 }
 
-function Row({ tick }: { tick: FeedTick }) {
-  const linked = Boolean(tick.caseId);
-  const open = () => {
-    if (tick.caseId) navigate(`/cases/${tick.caseId}`);
-  };
+function emptyText(filter: Filter, conn: string, error: string | null, total: number): string {
+  if (conn === 'connecting') return REPLAY ? 'Loading the recording…' : 'Connecting to the decision stream…';
+  if (conn === 'closed') {
+    return REPLAY
+      ? (error ?? 'The recording could not be loaded.')
+      : 'Not connected to the decision stream. Retrying automatically.';
+  }
+  if (filter === 'FLAGGED' && total > 0) {
+    return REPLAY
+      ? 'No flagged decisions yet in this pass of the recording.'
+      : 'No flagged decisions since this page opened. They appear here the moment one is decided.';
+  }
+  return REPLAY ? 'The recording is starting…' : 'Connected. Waiting for the first decision.';
+}
+
+const Row = memo(function Row({
+  t,
+  animate,
+  selected,
+  openable,
+}: {
+  t: TickRow;
+  animate: boolean;
+  selected: boolean;
+  openable: boolean;
+}) {
+  const flagged = t.verdict !== 'ALLOW';
+  const cls = [
+    'tick',
+    `tick--${t.verdict.toLowerCase()}`,
+    animate ? (flagged ? 'tick--new tick--flash' : 'tick--new') : '',
+    openable ? 'is-link' : '',
+    selected ? 'is-selected' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  const cells = (
+    <>
+      <span className="tick__time" title={fmtClockMs(t.decidedAt)}>
+        {fmtClock(t.decidedAt)}
+      </span>
+      <span className="tick__user">{t.userId}</span>
+      <span className="tick__verdict">
+        <VerdictPill verdict={t.verdict} />
+      </span>
+      <span className={t.mlScore === null ? 'tick__score num faint' : 'tick__score num'}>{fmtScore(t.mlScore)}</span>
+      <span className="tick__rules" title={t.firedRules?.join(', ') || undefined}>
+        {t.mode === 'DEGRADED' ? <span className="tick__degraded">rules only · </span> : null}
+        {ruleFamilies(t.firedRules)}
+      </span>
+      <span className="tick__lat num">{Math.round(t.latencyMs)} ms</span>
+    </>
+  );
+
+  if (openable && t.caseId) {
+    return (
+      <li>
+        <a
+          className={cls}
+          href={caseHref(t.caseId)}
+          aria-current={selected ? 'true' : undefined}
+          title={`Investigate case ${t.caseId}`}
+        >
+          {cells}
+        </a>
+      </li>
+    );
+  }
   return (
-    <li
-      className={`feed__row feed__row--${tick.verdict.toLowerCase()} ${linked ? 'is-linked' : ''}`}
-      onClick={linked ? open : undefined}
-      onKeyDown={
-        linked
-          ? (e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                open();
-              }
-            }
-          : undefined
-      }
-      tabIndex={linked ? 0 : undefined}
-      role={linked ? 'link' : undefined}
-      title={
-        linked
-          ? `Open case ${tick.caseId}`
-          : `txn ${tick.txnId} — no case (only REVIEW and BLOCK open cases)`
-      }
-    >
-      <span className="mono dim" data-label="Time">
-        {fmtClock(tick.decidedAt)}
-      </span>
-      <span className="mono" data-label="User">
-        {tick.userId}
-      </span>
-      <span data-label="Verdict">
-        <VerdictPill verdict={tick.verdict} />
-      </span>
-      <span data-label="Mode">
-        <ModeTag mode={tick.mode} />
-      </span>
-      <span className="mono num" data-label="Score">
-        {fmtScore(tick.mlScore)}
-      </span>
-      <span data-label="Rules">
-        <Rules rules={tick.firedRules} />
-      </span>
-      <span className="mono num" data-label="Latency">
-        {fmtNum(tick.latencyMs, 0)} ms
-        {linked ? (
-          <a className="feed__case" href={href(`/cases/${tick.caseId}`)} onClick={(e) => e.stopPropagation()}>
-            case →
-          </a>
-        ) : null}
-      </span>
+    <li>
+      <div
+        className={cls}
+        title={
+          flagged && t.caseId && REPLAY
+            ? 'This case was not recorded in the replay'
+            : flagged
+              ? `Case ${t.caseId ?? 'pending'}`
+              : 'Allowed: only REVIEW and BLOCK decisions open cases'
+        }
+      >
+        {cells}
+      </div>
     </li>
   );
-}
+});
